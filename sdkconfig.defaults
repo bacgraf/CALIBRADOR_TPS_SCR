@@ -1,0 +1,5 @@
+# Habilita suporte a WebSockets no servidor HTTP
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# Otimizações de Flash (Opcional, mas ajuda)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

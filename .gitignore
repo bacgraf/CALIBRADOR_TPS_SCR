@@ -1,0 +1,10 @@
+.pio
+.vscode/
+build/
+*.rar
+*.zip
+*.bin
+*.elf
+log.txt
+sdkconfig
+sdkconfig.old
