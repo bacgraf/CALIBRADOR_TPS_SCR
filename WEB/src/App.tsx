@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Zap } from 'lucide-react';
+import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Info, ShieldAlert, Zap } from 'lucide-react';
 import { dicionarioFalhas } from './lib/falhas';
 import { useWebSocket } from './lib/useWebSocket';
 
@@ -248,6 +248,9 @@ export default function App() {
   });
 
   const [fwPath, setFwPath] = useState<string>('');
+
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  const [showFaultTooltip, setShowFaultTooltip] = useState(false);
 
   const handleSelectSubMode = (mode: '6' | '12') => {
     setScrSubMode(mode);
@@ -564,6 +567,7 @@ export default function App() {
   let diagDesc = "";
   let diagTooltip = "";
 
+  let DiagIcon = Info;
   if (!isOff && data.err_cod !== undefined) {
     const fwInfo = `FW: ${data.uge_vers || "---"} | B: ${data.uge_build || "---"}`;
     if (data.err_cod === 32768 || data.err_cod === -32768) {
@@ -571,17 +575,19 @@ export default function App() {
       diagColor = "text-emerald-400";
       diagDesc = fwInfo;
       diagTooltip = "Sistema operando normalmente.";
+      DiagIcon = Info;
     } else {
-      const info = dicionarioFalhas[data.err_cod];
-      const txtFalha = info ? info.nome : "DESCONHECIDO";
-      const txtDesc = info ? info.desc : "Erro nao mapeado em base.";
+      const info = dicionarioFalhas[data.err_cod] || { nome: "DESCONHECIDO", desc: "Erro nao mapeado em base." };
+      const txtFalha = info.nome;
+      const txtDesc = info.desc;
       const extVal = data.err_ext || 0;
-      const txtExt = (info && info.exts && info.exts[extVal]) ? info.exts[extVal] : `Cod. Ext: ${extVal}`;
+      const txtExt = (info.exts && info.exts[extVal]) ? info.exts[extVal] : `Cod. Ext: ${extVal}`;
 
       diagText = `[${data.err_cod}-${extVal}] ${txtFalha}`;
       diagColor = "text-red-500";
       diagDesc = fwInfo;
       diagTooltip = `Falha: ${txtFalha}\nDescrição: ${txtDesc}\nDetalhe: ${txtExt}`;
+      DiagIcon = ShieldAlert;
     }
   }
 
@@ -611,7 +617,11 @@ export default function App() {
           <header className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex justify-between items-center shadow-md z-10">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
-                <Activity className="text-blue-500 w-5 h-5" />
+                {appMode === 'tps' ? (
+                  <Cpu className="text-blue-500 w-5 h-5" />
+                ) : (
+                  <CircuitBoard className="text-emerald-500 w-5 h-5" />
+                )}
                 <h1 className="text-base font-bold tracking-wider text-slate-100">CALIBRADOR {appMode.toUpperCase()}</h1>
               </div>
               <button
@@ -900,7 +910,14 @@ export default function App() {
                 <div className="border-t border-dashed border-slate-700 pt-3">
                   <div className="text-xs text-slate-500 mb-1">Última Falha UGE:</div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`text-lg font-bold ${diagColor}`} title={diagTooltip}>{diagText}</span>
+                    <span
+                      className={`text-lg font-bold ${diagColor} cursor-help transition-all duration-300 hover:brightness-125`}
+                      onMouseEnter={() => setShowFaultTooltip(true)}
+                      onMouseLeave={() => setShowFaultTooltip(false)}
+                      onMouseMove={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
+                    >
+                      {diagText}
+                    </span>
                     {diagDesc && <span className="text-xs bg-slate-900 text-slate-400 px-2 py-1 rounded font-mono border border-slate-700">{diagDesc}</span>}
                   </div>
                 </div>
@@ -1222,6 +1239,34 @@ export default function App() {
             <div className="bg-slate-900 px-6 py-4 flex justify-end gap-3 border-t border-slate-700">
               <button onClick={() => setShowWifiModal(false)} className="px-4 py-2 text-sm font-bold text-slate-400 hover:text-slate-200">CANCELAR</button>
               <button onClick={saveWifi} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded-lg shadow-lg transition-all">SALVAR E REINICIAR</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tooltip de Falha Customizado */}
+      {showFaultTooltip && (
+        <div
+          className="fixed z-[9999] pointer-events-none p-4 rounded-xl border border-slate-700 bg-slate-900/90 backdrop-blur-xl shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          style={{
+            left: tooltipPos.x + 15,
+            top: tooltipPos.y - 15,
+            transform: 'translateY(-100%)',
+            maxWidth: '320px'
+          }}
+        >
+          <div className="flex flex-col gap-2">
+            <div className={`text-sm font-black uppercase tracking-tighter ${diagColor} flex items-center gap-2`}>
+              <DiagIcon size={16} strokeWidth={2.5} className="opacity-90" />
+              DETALHES DO EVENTO
+            </div>
+            <div className="h-px bg-slate-800" />
+            <div className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-300 font-medium font-sans">
+              {diagTooltip}
+            </div>
+            <div className="mt-1 pt-1 border-t border-slate-800 flex justify-between items-center">
+              <span className="text-[8px] text-slate-500 font-bold uppercase">UGE Status</span>
+              <span className="text-[8px] text-emerald-500 font-bold font-mono">TELEMETRIA EM TEMPO REAL</span>
             </div>
           </div>
         </div>

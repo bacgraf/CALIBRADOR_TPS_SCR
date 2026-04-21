@@ -8,3 +8,11 @@ build/
 log.txt
 sdkconfig
 sdkconfig.old
+
+# Toolchain and IDE files
+TPS 125/ccs_base/
+TPS 125/build/
+TPS 125/dist/
+TPS 125/true
+node_modules/
+dist/
