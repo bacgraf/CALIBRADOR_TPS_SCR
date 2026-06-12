@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Info, ShieldAlert, Zap } from 'lucide-react';
+import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Info, ShieldAlert, Zap, ClipboardList, LogOut, User, LogIn, Cloud } from 'lucide-react';
 import { dicionarioFalhas } from './lib/falhas';
 import { useWebSocket } from './lib/useWebSocket';
+import { GraphAuth } from './services/microsoftGraph/auth';
+import { GraphExcel } from './services/microsoftGraph/excel';
 
 const checkHealth = (rawVal: number | undefined, divisor: number, refVal: string, openLimit: number, openThreshold: number, isOff: boolean) => {
   if (isOff || rawVal === undefined || rawVal <= -32700) return false;
@@ -211,10 +213,296 @@ const SelectionScreen = ({ onSelect, onOpenWifi }: { onSelect: (mode: 'tps' | 's
   );
 };
 
+const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) => {
+  const [snStart, setSnStart] = useState('');
+  const [snEnd, setSnEnd] = useState('');
+  const [client, setClient] = useState('');
+  const [op, setOp] = useState('');
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [msAccount, setMsAccount] = useState<any>(null);
+  const [deviceCodeInfo, setDeviceCodeInfo] = useState<{ userCode: string; verificationUri: string } | null>(null);
+  const [isWaitingLogin, setIsWaitingLogin] = useState(false);
+  const [loteStatus, setLoteStatus] = useState<{ msg: string; type: 'error' | 'success' | 'info' | null }>({ msg: '', type: null });
+
+  useEffect(() => {
+    // Polling de Status do Python Bridge
+    const interval = setInterval(() => {
+      fetch('http://127.0.0.1:8760/sys/status')
+        .then(res => res.json())
+        .then(data => {
+            if (data.ms_logged_in) {
+                setMsAccount({ name: data.ms_username });
+            } else {
+                setMsAccount(null);
+            }
+        })
+        .catch(() => setMsAccount(null));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleMicrosoftLogin = async () => {
+    setIsWaitingLogin(true);
+    setDeviceCodeInfo(null);
+    try {
+        const res = await fetch('http://127.0.0.1:8760/cloud/devicecode');
+        const codeData = await res.json();
+        if (codeData.error) throw new Error(codeData.error);
+        
+        setDeviceCodeInfo({ userCode: codeData.user_code, verificationUri: codeData.verification_uri });
+
+        // Chama a rota de token (o Python vai ficar em aguardo até o usuário terminar no celular/navegador)
+        fetch('http://127.0.0.1:8760/cloud/token', { method: 'POST' })
+            .then(tokenRes => tokenRes.json())
+            .then(tokenData => {
+                if (tokenData.success) {
+                    setMsAccount({ name: tokenData.username });
+                } else {
+                    alert("Erro na autenticação: " + tokenData.error);
+                }
+            })
+            .finally(() => {
+                setDeviceCodeInfo(null);
+                setIsWaitingLogin(false);
+            });
+
+    } catch (err) {
+        alert("Erro ao conectar ao Bridge Python: " + err);
+        setIsWaitingLogin(false);
+    }
+  };
+
+  const handleMicrosoftLogout = () => {
+    fetch('http://127.0.0.1:8760/cloud/logout').catch(() => {});
+    setMsAccount(null);
+    setDeviceCodeInfo(null);
+    setIsWaitingLogin(false);
+  };
+
+  const handleGenerate = async () => {
+    const start = parseInt(snStart);
+    const end = parseInt(snEnd);
+    if (isNaN(start) || isNaN(end) || start > end || !client || !op) {
+      alert("Preencha todos os campos corretamente.");
+      return;
+    }
+
+    setIsUpdating(true);
+
+    let productName = 'TPS-125';
+    if (appMode === 'scr') {
+      productName = scrSubMode === '6' ? 'SCR 6P' : 'SCR 12P';
+    }
+
+    // Dados conforme a estrutura de 7 colunas
+    const today = new Date().toLocaleDateString('pt-BR');
+    const obs = `${today} ${client.toUpperCase()} ${op.toUpperCase()}`;
+    const fw = ugeVers || '---';
+
+    const rows = [];
+    for (let sn = start; sn <= end; sn++) {
+      rows.push([
+        sn.toString(),
+        fw,
+        "PCB-01113-06",
+        "PCB-01083-03",
+        obs,
+        productName,
+        "10k"
+      ]);
+    }
+
+    // Gravação via Logger Local (Python Bridge para a Nuvem)
+    fetch('http://127.0.0.1:8760/cloud/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows })
+    })
+    .then(res => res.json())
+    .then(data => {
+      setIsUpdating(false);
+      if (data.success) {
+        setLoteStatus({ msg: "✅ Lote salvo com sucesso na Nuvem!", type: 'success' });
+      } else {
+        setLoteStatus({ msg: "❌ Erro: " + data.error, type: 'error' });
+      }
+    })
+    .catch((err) => {
+      setIsUpdating(false);
+      setLoteStatus({ msg: "❌ Bridge offline ou bloqueado.", type: 'error' });
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
+        <div className="px-4 py-3 bg-slate-800 border-b border-slate-700 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <ClipboardList className="w-5 h-5 text-blue-400" />
+            <h2 className="text-sm font-bold text-slate-200">Gerenciar Lote de Produção</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors">
+            <XCircle className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-4 flex flex-col gap-4">
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="text-[10px] text-slate-400 font-bold mb-1 block uppercase tracking-wider">SN Inicial</label>
+              <input type="number" value={snStart} onChange={e => setSnStart(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm focus:border-blue-500 outline-none text-white" placeholder="Ex: 52563" />
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] text-slate-400 font-bold mb-1 block uppercase tracking-wider">SN Final</label>
+              <input type="number" value={snEnd} onChange={e => setSnEnd(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm focus:border-blue-500 outline-none text-white" placeholder="Ex: 52581" />
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-400 font-bold mb-1 block uppercase tracking-wider">Cliente</label>
+            <input type="text" value={client} onChange={e => setClient(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm focus:border-blue-500 outline-none text-white" placeholder="Ex: TEKSEA ESTOQUE" />
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-400 font-bold mb-1 block uppercase tracking-wider">Ordem de Produção (OP)</label>
+            <input type="text" value={op} onChange={e => setOp(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm focus:border-blue-500 outline-none text-white" placeholder="Ex: OP-969" />
+          </div>
+
+          <div className="p-3 bg-slate-950/50 border border-slate-700 rounded-lg">
+            <div className="flex justify-between items-center mb-2">
+              <label className="text-[10px] text-slate-500 font-bold uppercase">Cloud / Bridge Python</label>
+              {msAccount ? (
+                <button onClick={handleMicrosoftLogout} className="text-[10px] text-red-400 font-bold flex items-center gap-1 hover:underline">
+                    <LogOut size={12} /> SAIR
+                </button>
+              ) : isWaitingLogin ? (
+                <button onClick={handleMicrosoftLogout} className="text-[10px] text-slate-400 font-bold flex items-center gap-1 hover:underline">
+                    Cancelar
+                </button>
+              ) : (
+                <button onClick={handleMicrosoftLogin} className="text-[10px] text-blue-400 font-bold flex items-center gap-1 hover:underline">
+                    <LogIn size={12} /> ENTRAR
+                </button>
+              )}
+            </div>
+            
+            {msAccount ? (
+                <div className="flex items-center gap-2 p-2 bg-blue-600/10 border border-blue-500/30 rounded">
+                    <Cloud className="w-4 h-4 text-blue-400" />
+                    <div className="flex flex-col">
+                        <span className="text-[11px] text-slate-200 font-bold">{msAccount.name}</span>
+                        <span className="text-[9px] text-slate-400">Bridge Autenticado (SharePoint 106FAB)</span>
+                    </div>
+                </div>
+            ) : deviceCodeInfo ? (
+                <div className="flex flex-col gap-2 p-2 bg-amber-900/20 border border-amber-500/40 rounded">
+                    <p className="text-[10px] text-amber-300 font-bold">1. Acesse em qualquer dispositivo:</p>
+                    <a 
+                      href={deviceCodeInfo.verificationUri} 
+                      target="_blank" 
+                      rel="noreferrer"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        window.open(deviceCodeInfo.verificationUri, 'mslogin', 'width=500,height=600,left=100,top=100');
+                      }}
+                      className="text-[11px] text-blue-400 underline font-mono hover:text-blue-300"
+                    >
+                      {deviceCodeInfo.verificationUri}
+                    </a>
+                    <p className="text-[10px] text-amber-300 font-bold mt-1">2. Digite o código:</p>
+                    <div className="text-center py-2 bg-slate-950 rounded border border-slate-600">
+                        <span className="text-2xl font-mono font-black tracking-[0.3em] text-white">{deviceCodeInfo.userCode}</span>
+                    </div>
+                    <p className="text-[9px] text-slate-500 text-center animate-pulse">Aguardando você logar no navegador...</p>
+                </div>
+            ) : (
+                <div className="text-[11px] text-slate-500 italic">Faça login para gravar na nuvem via Python.</div>
+            )}
+          </div>
+
+          <div className="p-3 bg-blue-900/10 border border-blue-500/20 rounded-lg text-xs text-blue-200 text-center">
+            Versão Firmware: <b>{ugeVers || 'Aguardando telemetria...'}</b>
+          </div>
+        </div>
+
+        {/* Status Feedback */}
+        {loteStatus.type && (
+          <div className={`px-4 py-2 text-center text-[11px] font-bold animate-in fade-in slide-in-from-top-1 ${
+            loteStatus.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+          }`}>
+            {loteStatus.msg}
+          </div>
+        )}
+
+        <div className="px-4 py-3 bg-slate-800/50 border-t border-slate-700 flex justify-end gap-2">
+          <button 
+            onClick={() => { setLoteStatus({ msg: '', type: null }); onClose(); }} 
+            disabled={isUpdating}
+            className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+          >
+            CANCELAR
+          </button>
+          <button
+            onClick={loteStatus.type === 'success' ? () => { setLoteStatus({ msg: '', type: null }); onClose(); } : handleGenerate}
+            disabled={isUpdating}
+            className={`px-4 py-2 rounded text-xs font-bold transition-all shadow ${
+              isUpdating ? 'bg-slate-700 text-slate-400 cursor-not-allowed' :
+              loteStatus.type === 'success' ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/50' :
+              'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/50'
+            }`}
+          >
+            {isUpdating ? 'GRAVANDO...' : loteStatus.type === 'success' ? 'CONCLUÍDO' : 'ATUALIZAR EXCEL'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}, (prev, next) => {
+  // Evita re-render se os dados de telemetria mudarem, mas as informações do lote não
+  return prev.ugeVers === next.ugeVers &&
+    prev.appMode === next.appMode &&
+    prev.scrSubMode === next.scrSubMode;
+});
+
+
 export default function App() {
+  const [bridgeAlive, setBridgeAlive] = useState(false);
+  const [cloudUser, setCloudUser] = useState<string | null>(null);
+  const [bridgePaths, setBridgePaths] = useState({ tps: '', scr: '' });
+  const [rebootTarget, setRebootTarget] = useState<number | null>(null);
+
+  // Polling global para status do Bridge e Nuvem
+  useEffect(() => {
+    const checkStatus = () => {
+      fetch('http://127.0.0.1:8760/sys/status')
+        .then(res => res.json())
+        .then(data => {
+          setBridgeAlive(data.bridge_alive);
+          setCloudUser(data.ms_logged_in ? data.ms_username : null);
+          setBridgePaths({ tps: data.tps_root, scr: data.scr_root });
+        })
+        .catch(() => {
+          setBridgeAlive(false);
+          setCloudUser(null);
+        });
+    };
+    checkStatus();
+    const interval = setInterval(checkStatus, 5000);
+    return () => clearInterval(interval);
+  }, []);
   const [appMode, setAppMode] = useState<'selection' | 'tps' | 'scr'>(() => {
     return (localStorage.getItem('calibrador_mode') as 'tps' | 'scr') || 'selection';
   });
+
+  // Atualiza o título da aba do navegador dinamicamente
+  useEffect(() => {
+    if (appMode === 'selection') {
+      document.title = "CALIBRADOR TEKSEA";
+    } else {
+      document.title = `CALIBRADOR TEKSEA | ${appMode.toUpperCase()}`;
+    }
+  }, [appMode]);
 
   const [isRevealing, setIsRevealing] = useState(false);
 
@@ -265,8 +553,11 @@ export default function App() {
   const [showEepromModal, setShowEepromModal] = useState(false);
   const [showFlashModal, setShowFlashModal] = useState(false);
   const [showWifiModal, setShowWifiModal] = useState(false);
+  const [showLoteModal, setShowLoteModal] = useState(false);
   const [wifiConfig, setWifiConfig] = useState({ ssid: '', pass: '', ip: '', gw: '', mask: '', dhcp: true });
   const [isScanning, setIsScanning] = useState(false);
+
+  const handleCloseLoteModal = useCallback(() => setShowLoteModal(false), []);
 
   // Clear scan results when modal closes
   useEffect(() => {
@@ -438,12 +729,24 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFlashing, calibrateAll, autoAdjustAll]);
 
+  // --- HEARTBEAT GLOBAL: mantém o Teksea Bridge vivo enquanto a aba está aberta ---
+  useEffect(() => {
+    const beat = setInterval(() => {
+      fetch('http://127.0.0.1:8760/sys/heartbeat').catch(() => {});
+    }, 5000);
+    return () => clearInterval(beat);
+  }, []);
+
   useEffect(() => {
     if (showFlashModal && !isFlashing) {
-      fetch('http://localhost:8765/check')
+      fetch('http://127.0.0.1:8760/tms/check')
         .then(res => res.json())
         .then(d => setFwAvailable({ jiga: !!d.jiga, burnin: !!d.burnin, cliente: !!d.cliente }))
-        .catch(err => console.log('Bridge offline', err));
+        .catch(err => {
+          console.log('Bridge offline, tentando despertar...', err);
+          // Dispara o protocolo para acordar o Bridge se ele estiver OFF
+          window.location.href = "teksea://start";
+        });
     }
   }, [showFlashModal, isFlashing]);
 
@@ -452,7 +755,7 @@ export default function App() {
     if (isFlashing) {
       interval = setInterval(async () => {
         try {
-          const res = await fetch('http://localhost:8765/progress', { mode: 'cors' });
+          const res = await fetch('http://127.0.0.1:8760/tms/progress', { mode: 'cors' });
           const d = await res.json();
           if (d.progress !== undefined) {
             setFlashProgress(d.progress);
@@ -462,7 +765,6 @@ export default function App() {
               setFlashStatus("GRAVAÇÃO CONCLUÍDA COM SUCESSO!");
               clearInterval(interval);
               setIsFlashing(false);
-              setTimeout(() => { if (window.confirm("Gravação Terminada. Fechar janela?")) setShowFlashModal(false); }, 1500);
             }
             if (d.error) {
               setFlashStatus("ERRO: " + d.error);
@@ -489,14 +791,7 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isFlashing]);
 
-  useEffect(() => {
-    if (showFlashModal) {
-      fetch(`http://localhost:8765/config?product=${appMode}`)
-        .then(res => res.json())
-        .then(d => setFwPath(d.path || 'Não configurado'))
-        .catch(() => setFwPath('Bridge local offline'));
-    }
-  }, [showFlashModal, appMode]);
+  // O caminho da pasta agora é gerenciado globalmente pelo bridgePaths no heartbeat
 
   const handleFlash = (type: string) => {
     setIsFlashing(true);
@@ -505,26 +800,20 @@ export default function App() {
     setFlashStatus('Iniciando Bridge Python...');
 
     const product = appMode; // 'tps' ou 'scr'
-    const url = `http://localhost:8765/flash?type=${type}&product=${product}`;
+    const url = `http://127.0.0.1:8760/tms/flash?type=${type}&product=${product}`;
 
     fetch(url)
       .then(res => {
         if (!res.ok) throw new Error();
-        // Atualiza o caminho mostrado na tela após um tempo (caso tenha sido configurado agora)
-        setTimeout(() => {
-          fetch(`http://localhost:8765/config?product=${product}`)
-            .then(r => r.json())
-            .then(d => setFwPath(d.path || 'Não configurado'));
-        }, 2000);
       })
       .catch(() => {
         const espIP = window.location.hostname || "192.168.4.1";
-        window.location.href = `tms-flash://${espIP}/${type}/${product}`;
+        window.location.href = `teksea://tms/${type}/${product}`;
       });
   };
 
   const setupFlashPaths = () => {
-    window.location.href = `tms-flash://setup/${appMode}`;
+    window.location.href = `teksea://tms/setup/${appMode}`;
   };
 
   const syncSerialNumber = () => {
@@ -535,24 +824,15 @@ export default function App() {
     send({ command: "write_reg", reg: 128, format: 4, value: val });
     // 2. Grava na UGE (Reg 129) com delay maior de 500ms para garantir o salvamento
     setTimeout(() => send({ command: "write_reg", reg: 129, format: 4, value: val }), 500);
-    setSnInput('');
+    // 3. Incrementa o valor para o próximo item do lote em vez de limpar
+    setSnInput((val + 1).toString());
   };
 
   const sendReboot = (code: number) => {
     if (!connected) return;
-    const titles: Record<number, string> = {
-      1: "Normal / Salvar",
-      2: "Ajustar Horímetro",
-      3: "Apagar Ajustes",
-      4: "Apagar Param. Base",
-      5: "Apagar EEPROM",
-      6: "Inicializar EEPROM",
-      7: "Restaurar"
-    };
-    if (window.confirm(`Executar comando [${titles[code]}] e reiniciar a CPU?`)) {
-      send({ command: "write_reg", reg: 426, format: 2, value: code });
-      setShowEepromModal(false);
-    }
+    send({ command: "write_reg", reg: 426, format: 2, value: code });
+    setRebootTarget(null);
+    setShowEepromModal(false);
   };
 
   const isDinActive = (bit: number) => {
@@ -593,6 +873,8 @@ export default function App() {
 
   return (
     <>
+      {/* Wake-up silencioso do Teksea Bridge ao abrir a pagina */}
+      <iframe src="teksea://start" style={{ display: 'none' }} title="bridge-wakeup" />
       <style>{`
         @keyframes scan-move {
           0%   { left: -4%; }
@@ -610,6 +892,8 @@ export default function App() {
         }
       `}</style>
 
+      {showLoteModal && <LoteModal onClose={handleCloseLoteModal} ugeVers={data.uge_vers} appMode={appMode} scrSubMode={scrSubMode} />}
+
       {appMode === 'selection' ? (
         <SelectionScreen onSelect={handleSelectMode} onOpenWifi={() => setShowWifiModal(true)} />
       ) : (
@@ -623,6 +907,12 @@ export default function App() {
                   <CircuitBoard className="text-emerald-500 w-5 h-5" />
                 )}
                 <h1 className="text-base font-bold tracking-wider text-slate-100">CALIBRADOR {appMode.toUpperCase()}</h1>
+                <button
+                  onClick={() => setShowLoteModal(true)}
+                  className="ml-4 px-3 py-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                >
+                  <ClipboardList className="w-4 h-4" /> LOTE
+                </button>
               </div>
               <button
                 onClick={() => handleSelectMode('selection')}
@@ -654,6 +944,12 @@ export default function App() {
               </div>
               <div className={`px-3 py-1 rounded-full text-xs font-bold border ${data.uge_ok ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>
                 UGE: {data.uge_ok ? 'LINK OK' : 'OFF'}
+              </div>
+              <div className={`px-3 py-1 rounded-full text-xs font-bold border ${bridgeAlive ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>
+                BRIDGE: {bridgeAlive ? 'OK' : 'OFF'}
+              </div>
+              <div className={`px-3 py-1 rounded-full text-xs font-bold border ${cloudUser ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>
+                NUVEM: {cloudUser ? cloudUser.toUpperCase() : 'OFF'}
               </div>
               <img src="/Teksea.png" alt="Teksea" className="h-6 ml-2 brightness-0 invert opacity-80" />
             </div>
@@ -1018,29 +1314,66 @@ export default function App() {
               </button>
             </div>
             <div className="p-6">
-              <p className="text-sm text-slate-400 mb-4">Selecione a ação de boot desejada. A CPU irá reiniciar imediatamente.</p>
-              <div className="grid gap-2">
-                {[
-                  { code: 1, title: "1. Normal / Salvar", desc: "Reboot normal", danger: false },
-                  { code: 2, title: "2. Ajustar Horímetro", desc: "Ajustar horímetro", danger: false },
-                  { code: 3, title: "3. Apagar Ajustes", desc: "Apagar somente a memória de ajustes", danger: false },
-                  { code: 4, title: "4. Apagar Param. Base", desc: "Apagar parâmetros de painel e ajustes", danger: false },
-                  { code: 5, title: "5. Apagar EEPROM", desc: "Apaga toda a EEPROM", danger: true },
-                  { code: 6, title: "6. Inicializar EEPROM", desc: "Apaga e Inicializa a EEPROM", danger: true },
-                  { code: 7, title: "7. Restaurar", desc: "Forçar a assinatura desta versão de EEPROM", danger: true },
-                ].map(opt => (
-                  <button
-                    key={opt.code} onClick={() => sendReboot(opt.code)}
-                    className="flex flex-col text-left p-3 rounded-lg border border-slate-700 hover:border-blue-500 hover:bg-slate-700/50 transition-all group"
-                  >
-                    <span className={`font-bold text-sm ${opt.danger ? 'text-red-400' : 'text-slate-200'} group-hover:text-blue-400`}>{opt.title}</span>
-                    <span className="text-xs text-slate-500">{opt.desc}</span>
-                  </button>
-                ))}
-              </div>
+              {!rebootTarget ? (
+                <>
+                  <p className="text-sm text-slate-400 mb-4">Selecione a ação de boot desejada. A CPU irá reiniciar imediatamente.</p>
+                  <div className="grid gap-2">
+                    {[
+                      { code: 1, title: "1. Normal / Salvar", desc: "Reboot normal", danger: false },
+                      { code: 2, title: "2. Ajustar Horímetro", desc: "Ajustar horímetro", danger: false },
+                      { code: 3, title: "3. Apagar Ajustes", desc: "Apagar somente a memória de ajustes", danger: false },
+                      { code: 4, title: "4. Apagar Param. Base", desc: "Apagar parâmetros de painel e ajustes", danger: false },
+                      { code: 5, title: "5. Apagar EEPROM", desc: "Apaga toda a EEPROM", danger: true },
+                      { code: 6, title: "6. Inicializar EEPROM", desc: "Apaga e Inicializa a EEPROM", danger: true },
+                      { code: 7, title: "7. Restaurar", desc: "Forçar a assinatura desta versão de EEPROM", danger: true },
+                    ].map(opt => (
+                      <button
+                        key={opt.code} onClick={() => setRebootTarget(opt.code)}
+                        className="flex flex-col text-left p-3 rounded-lg border border-slate-700 hover:border-blue-500 hover:bg-slate-700/50 transition-all group"
+                      >
+                        <span className={`font-bold text-sm ${opt.danger ? 'text-red-400' : 'text-slate-200'} group-hover:text-blue-400`}>{opt.title}</span>
+                        <span className="text-xs text-slate-500">{opt.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-center text-center py-4">
+                  <ShieldAlert size={48} className={rebootTarget >= 5 ? "text-red-500 mb-4" : "text-amber-500 mb-4"} />
+                  <h3 className="text-lg font-bold text-white mb-2 uppercase">Confirmar Ação</h3>
+                  <p className="text-slate-400 text-sm mb-6">
+                    Você selecionou a opção:<br />
+                    <b className="text-slate-100">
+                      {[
+                        "1. Normal / Salvar", "2. Ajustar Horímetro", "3. Apagar Ajustes", 
+                        "4. Apagar Param. Base", "5. Apagar EEPROM", "6. Inicializar EEPROM", "7. Restaurar"
+                      ][rebootTarget - 1]}
+                    </b>
+                    <br /><br />
+                    A CPU irá reiniciar para aplicar esta ação. Deseja continuar?
+                  </p>
+                  
+                  <div className="flex gap-4 w-full">
+                    <button 
+                      onClick={() => setRebootTarget(null)}
+                      className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-lg transition-colors"
+                    >
+                      VOLTAR
+                    </button>
+                    <button 
+                      onClick={() => sendReboot(rebootTarget)}
+                      className={`flex-1 px-4 py-3 text-white font-bold rounded-lg transition-colors shadow-lg ${
+                        rebootTarget >= 5 ? 'bg-red-600 hover:bg-red-500 shadow-red-900/40' : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/40'
+                      }`}
+                    >
+                      SIM, REINICIAR
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="bg-slate-900 px-6 py-4 flex justify-end border-t border-slate-700">
-              <button onClick={() => setShowEepromModal(false)} className="px-4 py-2 bg-slate-800 border border-slate-600 rounded shadow-sm text-sm font-bold text-slate-300 hover:bg-slate-700">FECHAR</button>
+              <button onClick={() => { setRebootTarget(null); setShowEepromModal(false); }} className="px-4 py-2 bg-slate-800 border border-slate-600 rounded shadow-sm text-sm font-bold text-slate-300 hover:bg-slate-700">FECHAR</button>
             </div>
           </div>
         </div>
@@ -1062,7 +1395,15 @@ export default function App() {
             <div className="bg-slate-900/80 px-6 py-2 border-b border-slate-700 flex items-center gap-2">
               <Search size={12} className="text-slate-500" />
               <span className="text-[10px] text-slate-500 font-bold uppercase whitespace-nowrap">Pasta:</span>
-              <span className="text-[10px] font-mono text-blue-400 truncate" title={fwPath}>{fwPath || 'Carregando...'}</span>
+              {bridgeAlive ? (
+                <span className="text-[10px] font-mono text-blue-400 truncate" title={appMode === 'tps' ? bridgePaths.tps : bridgePaths.scr}>
+                  {appMode === 'tps' ? (bridgePaths.tps || 'Não configurado') : (bridgePaths.scr || 'Não configurado')}
+                </span>
+              ) : (
+                <span className="text-[10px] font-mono font-bold text-red-500 animate-pulse">
+                  BRIDGE OFFLINE
+                </span>
+              )}
             </div>
 
             <div className="p-6">
@@ -1104,8 +1445,14 @@ export default function App() {
               )}
             </div>
             <div className="bg-slate-900 px-6 py-4 flex justify-between items-center border-t border-slate-700">
-              <button onClick={setupFlashPaths} disabled={isFlashing} className="text-xs text-blue-400 hover:text-blue-300 underline font-medium disabled:opacity-50">⚙ Configurar Pastas</button>
-              <button onClick={() => !isFlashing && setShowFlashModal(false)} disabled={isFlashing} className="px-4 py-2 bg-slate-800 border border-slate-600 rounded shadow-sm text-sm font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-50">CANCELAR</button>
+              <button onClick={setupFlashPaths} disabled={isFlashing} className="text-xs text-blue-400 hover:text-blue-300 underline font-medium disabled:opacity-50 tracking-tight">⚙ CONFIGURAR PASTAS</button>
+              <button 
+                onClick={() => setShowFlashModal(false)} 
+                disabled={isFlashing} 
+                className={`px-4 py-2 rounded shadow-sm text-sm font-bold transition-all ${isFlashing ? 'bg-slate-800 border-slate-600 text-slate-500 opacity-50' : flashProgress >= 100 ? 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 shadow-lg shadow-emerald-900/20' : 'bg-slate-800 border border-slate-600 text-slate-300 hover:bg-slate-700'}`}
+              >
+                {flashProgress >= 100 ? 'CONCLUÍDO' : 'CANCELAR'}
+              </button>
             </div>
           </div>
         </div>
@@ -1236,9 +1583,10 @@ export default function App() {
                 </div>
               </div>
             </div>
+            
             <div className="bg-slate-900 px-6 py-4 flex justify-end gap-3 border-t border-slate-700">
-              <button onClick={() => setShowWifiModal(false)} className="px-4 py-2 text-sm font-bold text-slate-400 hover:text-slate-200">CANCELAR</button>
-              <button onClick={saveWifi} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded-lg shadow-lg transition-all">SALVAR E REINICIAR</button>
+              <button onClick={() => setShowWifiModal(false)} className="px-4 py-2 text-sm font-bold text-slate-400 hover:text-slate-200 transition-colors">CANCELAR</button>
+              <button onClick={saveWifi} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-blue-900/20 transition-all">SALVAR E REINICIAR</button>
             </div>
           </div>
         </div>

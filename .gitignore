@@ -14,5 +14,6 @@ TPS 125/ccs_base/
 TPS 125/build/
 TPS 125/dist/
 TPS 125/true
+TEKSEA_BRIDGE/ccs_base/
 node_modules/
 dist/

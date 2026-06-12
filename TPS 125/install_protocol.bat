@@ -1,5 +1,14 @@
 @echo off
 setlocal enableextensions
+
+:: Verifica permissao de administrador e solicita se necessario
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo Solicitando permissoes de administrador...
+    powershell -Command "Start-Process '%0' -Verb RunAs"
+    exit /b
+)
+
 set "bridge_exe=%~dp0tms_bridge.exe"
 
 echo Registrando Protocolo tms-flash para:

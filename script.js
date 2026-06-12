@@ -251,7 +251,7 @@ window.syncSerialNumber = () => {
     setTimeout(() => {
         socket.send(JSON.stringify({ command: "write_reg", reg: 129, format: 4, value: val }));
     }, 100);
-    input.value = ""; // Limpa campo
+    input.value = (val + 1).toString(); // Incrementa para o próximo
 };
 
 window.sendDebugFlag = (name) => {
