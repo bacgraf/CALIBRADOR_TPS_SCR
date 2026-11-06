@@ -13,7 +13,11 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "ihm_state.h"
+#include "device_operations.h"
+#include <math.h>
+#include <float.h>
 #include "uge_datamap.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -24,9 +28,10 @@
 int64_t g_ping_start = 0;
 bool g_waiting_ping = false;
 uint32_t g_last_can_msg_ms = 0; // Timestamp da última mensagem recebida da UGE
+static atomic_uint_fast8_t g_can_tx_seq = 0; // Bit de sequência unificado (Req_Read / Req_Write)
 
 void can_protocol_print_msg(twai_message_t *msg) {
-  if (!msg->extd)
+  if (!msg->extd || msg->rtr || msg->data_length_code > 8)
     return; // Ignora se não for Extended ID (29-bits)
 
   tuCAN_ID id_dec;
@@ -36,6 +41,10 @@ void can_protocol_print_msg(twai_message_t *msg) {
   // Destino 1=IHM, 15=Broadcast
   if (id_dec.bit.origem == END_UGE &&
       (id_dec.bit.destino == END_IHM || id_dec.bit.destino == END_BROADCAST)) {
+
+    // Atualiza o heartbeat do link CAN para qualquer frame válido vindo da UGE
+    // (incluindo Advertise mesmo com ignore_advertise ativo, Resp_Write e Nack).
+    g_last_can_msg_ms = pdTICKS_TO_MS(xTaskGetTickCount());
 
     // Verifica a nossa NOVA Flag para silenciar o Spam do ADVERTISE (Op=3)
     if (g_ihm_state.flags.ignore_advertise &&
@@ -50,9 +59,6 @@ void can_protocol_print_msg(twai_message_t *msg) {
     if ((id_dec.bit.operacao == OP_RESP_READ && id_dec.bit.Nack == 0 && msg->data_length_code > 0) ||
         (id_dec.bit.operacao == OP_ADVERTISE && id_dec.bit.Nack == 1 && msg->data_length_code > 0)) {
 
-      // Atualiza o heartbeat do link CAN com a UGE
-      g_last_can_msg_ms = pdTICKS_TO_MS(xTaskGetTickCount());
-
       // Se estivemos esperando um ping pelo reg 11 (VRET)
       if (g_waiting_ping && id_dec.bit.reg == REG_VRET) {
         g_waiting_ping = false;
@@ -65,6 +71,8 @@ void can_protocol_print_msg(twai_message_t *msg) {
           int32_t raw_val =
               (int16_t)((msg->data[i * 2] << 8) | msg->data[i * 2 + 1]);
           ihm_state_update_register(id_dec.bit.reg + i, raw_val);
+          if (id_dec.bit.operacao == OP_RESP_READ)
+            device_operations_on_read(id_dec.bit.reg + i, (uint32_t)raw_val);
         }
       }
       // Suportando a leitura de dados de 32-bits (Formato 4)!
@@ -72,13 +80,15 @@ void can_protocol_print_msg(twai_message_t *msg) {
         uint8_t qtd = msg->data_length_code / 4;
         for (int i = 0; i < qtd; i++) {
           int32_t raw_val =
-              (int32_t)((msg->data[i * 4] << 24) |
+              (int32_t)(((uint32_t)msg->data[i * 4] << 24) |
                         (msg->data[i * 4 + 1] << 16) |
                         (msg->data[i * 4 + 2] << 8) | msg->data[i * 4 + 3]);
 
           // No mapa de dados da UGE SR125, cada variável ocupa 1 índice ÚNICO
           // (+1), independente de ser int16 ou int32.
           ihm_state_update_register(id_dec.bit.reg + i, raw_val);
+          if (id_dec.bit.operacao == OP_RESP_READ)
+            device_operations_on_read(id_dec.bit.reg + i, (uint32_t)raw_val);
         }
       }
       // Suporta leitura de int64_t (Formato 6) para Firmware
@@ -160,11 +170,10 @@ bool can_protocol_transmit_req_read(uint16_t reg_number, uint8_t formato,
   tx_id.bit.formato = formato;
   tx_id.bit.Nack = 0; // IMPORTANTE: 0 = UGE responde, 1 = Silêncio
 
-  // Alternancia do bit SEQ pode ser necessária mas pra request_read isolada
-  // serve 0
-  static uint8_t flag_seq = 0;
-  tx_id.bit.seq = flag_seq;
-  flag_seq = !flag_seq;
+  // Alternância unificada do bit SEQ: só avança quando o envio ao driver tem sucesso,
+  // evitando colisão com o filtro de duplicatas (recent[END_IHM]) da UGE.
+  uint8_t seq = atomic_load(&g_can_tx_seq) & 1U;
+  tx_id.bit.seq = seq;
 
   twai_message_t tx_msg = {0};
   tx_msg.identifier = tx_id.all;
@@ -174,13 +183,18 @@ bool can_protocol_transmit_req_read(uint16_t reg_number, uint8_t formato,
 
   // Bloqueia no max 10ms se a fila TX estiver meio cheia
   if (twai_transmit(&tx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
+    atomic_store(&g_can_tx_seq, seq ^ 1U);
     return true;
   }
   return false;
 }
 
 bool can_protocol_transmit_req_write(uint16_t reg_number, uint8_t formato,
-                                     float value) {
+                                     double value) {
+  if (reg_number > 1023 || !isfinite(value)) return false;
+  if (formato == 2 && (value < -32768 || value > 32767 || trunc(value) != value)) return false;
+  if (formato == 4 && (value < 0 || value > UINT32_MAX || trunc(value) != value)) return false;
+  if (formato == 5 && (value < -FLT_MAX || value > FLT_MAX)) return false;
   tuCAN_ID tx_id;
   tx_id.all = 0;
 
@@ -193,9 +207,8 @@ bool can_protocol_transmit_req_write(uint16_t reg_number, uint8_t formato,
   tx_id.bit.formato = formato;
   tx_id.bit.Nack = 0;
 
-  static uint8_t flag_seq_w = 0;
-  tx_id.bit.seq = flag_seq_w;
-  flag_seq_w = !flag_seq_w;
+  uint8_t seq = atomic_load(&g_can_tx_seq) & 1U;
+  tx_id.bit.seq = seq;
 
   twai_message_t tx_msg = {0};
   tx_msg.identifier = tx_id.all;
@@ -206,7 +219,7 @@ bool can_protocol_transmit_req_write(uint16_t reg_number, uint8_t formato,
     float f;
     uint32_t u;
   } raw;
-  raw.f = value;
+  raw.f = (float)value;
 
   if (formato == 2) { // int16
     int16_t short_val = (int16_t)value;
@@ -231,6 +244,7 @@ bool can_protocol_transmit_req_write(uint16_t reg_number, uint8_t formato,
   }
 
   if (twai_transmit(&tx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
+    atomic_store(&g_can_tx_seq, seq ^ 1U);
     if (g_ihm_state.flags.debug_print_can) {
       printf("[Req_Write] Reg: %3u | Fmt: %u | Val: %.2f | Dados(Hex): ",
              reg_number, formato, value);

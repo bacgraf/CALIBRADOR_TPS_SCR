@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx --test test/*.test.tsx"
   },
   "dependencies": {
     "@azure/msal-browser": "^5.8.0",
@@ -26,8 +27,10 @@
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

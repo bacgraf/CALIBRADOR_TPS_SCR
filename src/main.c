@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include "can_driver.h"
+#include "device_operations.h"
 #include "can_protocol.h"
 #include "ihm_state.h"
 #include "nvs_flash.h"
@@ -15,7 +16,7 @@
 
 #define STATUS_LED_GPIO GPIO_NUM_2
 
-static const char *TAG = "IHM_TPS125_MAIN";
+
 
 /**
  * @brief Tarefa dedicada à recepção contínua de mensagens CAN
@@ -23,7 +24,7 @@ static const char *TAG = "IHM_TPS125_MAIN";
 void can_receive_task(void *pvParameter) {
   twai_message_t rx_msg;
   while (1) {
-    if (twai_receive(&rx_msg, portMAX_DELAY) == ESP_OK) {
+    if (twai_receive(&rx_msg, pdMS_TO_TICKS(1000)) == ESP_OK) {
       can_protocol_print_msg(&rx_msg);
     }
   }
@@ -34,49 +35,30 @@ void can_receive_task(void *pvParameter) {
  */
 void telemetry_task(void *pvParameter) {
   uint8_t step = 0;
-  static int test_step = 0;   
-  static int test_cycle = 0; 
-  static int test_ticks = 0;
-  static uint16_t led_ticks = 0; // Contador para blink do LED de status
-
+  uint32_t published = 0;
+  uint32_t last_probe_ms = 0;
   while (1) {
-    if (!g_ihm_state.flags.enable_telemetry) {
-      vTaskDelay(pdMS_TO_TICKS(100));
-      continue;
-    }
+    uint32_t now_ms = pdTICKS_TO_MS(xTaskGetTickCount());
+    uint32_t last_can = g_last_can_msg_ms;
+    g_ihm_state.flags.uge_link_ok =
+        last_can > 0 && (uint32_t)(now_ms - last_can) <= 3000;
 
-    // --- CONTROLE DE TESTE AUTOMÁTICO DE RELÉS ---
-    if (g_ihm_state.flags.relay_test_active) {
-        test_ticks++;
-        if (test_ticks >= 8) { 
-            test_ticks = 0;
-            if (test_step < 12) {
-                uint16_t next_val = (test_step % 2 == 0) ? (1 << (test_step / 2)) : 0;
-                can_protocol_transmit_req_write(REG_TESTE_DOUT_PRI, 2, next_val);
-                g_ihm_state.teste_dout_pri = next_val; 
-                test_step++;
-            } else {
-                test_step = 0;
-                test_cycle++;
-                if (test_cycle >= 3) {
-                    g_ihm_state.flags.relay_test_active = false;
-                    test_cycle = 0;
-                }
-            }
-        }
-        step = 0; 
-    } else {
-        test_step = 0; test_cycle = 0; test_ticks = 0;
-    }
+    bool can_ready = can_driver_check_and_recover(now_ms, g_ihm_state.flags.uge_link_ok);
 
-    // --- PASSOS SEQUENCIAIS DE TELEMETRIA ---
-    switch (step) {
+    device_operations_tick(now_ms);
+    // Publicação e teste continuam mesmo com consultas periódicas desligadas.
+    // Quando sem link com a UGE, reduz a frequência de sondagem (250ms) para não saturar a fila TX.
+    bool should_poll = can_ready && g_ihm_state.flags.enable_telemetry &&
+                       (g_ihm_state.flags.uge_link_ok || (uint32_t)(now_ms - last_probe_ms) >= 250);
+    if (should_poll) {
+      last_probe_ms = now_ms;
+      switch (step) {
         case 0: can_protocol_transmit_req_read(REG_VRET1_AVG, 2, 4); break;    // 104-107
         case 1: can_protocol_transmit_req_read(REG_IRET2_AVG, 2, 4); break;    // 108-111
         case 2: can_protocol_transmit_req_read(REG_VCA_ST_RMS, 2, 4); break;   // 112-115
         case 3: can_protocol_transmit_req_read(REG_ICA_T_RMS, 2, 2); break;    // 116-117
-        case 4: can_protocol_transmit_req_read(REG_VCA_T_RMS, 4, 1); break;    // 118 (f32)
-        case 5: can_protocol_transmit_req_read(REG_ICA_S_RMS, 4, 1); break;    // 149 (f32) - Check Map
+        case 4: can_protocol_transmit_req_read(REG_VCA_T_RMS, 2, 1); break;    // 430 (int16)
+        case 5: can_protocol_transmit_req_read(REG_ICA_S_RMS, 2, 1); break;    // 432 (int16)
         
         case 6: can_protocol_transmit_req_read(REG_VRET1_GANHO, 2, 4); break;  // 132-135
         case 7: can_protocol_transmit_req_read(REG_VCONS_GANHO, 2, 4); break;  // 136-139
@@ -84,7 +66,7 @@ void telemetry_task(void *pvParameter) {
         case 9: can_protocol_transmit_req_read(REG_VCA_RS_GANHO, 2, 4); break; // 144-147
         case 10: can_protocol_transmit_req_read(REG_VCA_T_GANHO, 2, 2); break; // 148-149
         
-        case 11: can_protocol_transmit_req_read(REG_SN_CPU, 4, 2); break;      // 128-129 (i32)
+        case 11: if (!serial_busy()) can_protocol_transmit_req_read(REG_SN_CPU, 4, 2); break;      // 128-129 (i32)
         case 12: can_protocol_transmit_req_read(REG_HORAS_SET, 4, 1); break;   // 130 (i32)
         case 13: can_protocol_transmit_req_read(REG_CICLOS_SET, 2, 1); break;  // 131
         case 14: can_protocol_transmit_req_read(REG_TESTE_DIN, 2, 2); break;   // 416-417
@@ -94,48 +76,21 @@ void telemetry_task(void *pvParameter) {
         case 17: can_protocol_transmit_req_read(2, 7, 1); break;               // REG_Vers_Build (str8)
         case 18: can_protocol_transmit_req_read(75, 2, 2); break;              // 75 e 76 (Erro Cod e Erro Ext)
         default: break;
+      }
+
+      step = (step + 1) % 19;
     }
-
-    step++;
-    if (step > 18) {
-        step = 0;
-        
-        // --- LOG DE MONITORAMENTO VIA SERIAL (Só imprime se Telemetria estiver ON) ---
-        if (g_ihm_state.flags.enable_telemetry) {
-            ESP_LOGI(TAG, "\n------ MONITORAMENTO TPS125 ------"
-                     "\nVcc: Vret=%.2fV | Vcons=%.2fV | Ibat=%.2fA"
-                     "\nCA : VcaRS=%.1fV | IcaR=%.2fA | Freq=%.1fHz"
-                     "\nBat: Temp=%.1f C | DIN: 0x%02X"
-                     "\n----------------------------------",
-                     g_ihm_state.vret1_avg, g_ihm_state.vcons_avg, g_ihm_state.ibat_avg,
-                     g_ihm_state.vca_rs_rms, g_ihm_state.ica_r_rms, g_ihm_state.fca_meas,
-                     g_ihm_state.temp_bat_meas, g_ihm_state.teste_din);
-        }
-
-        web_server_send_update();
-
-        // --- WATCHDOG DO LINK CAN (UGE) ---
-        // Se não chegar nenhuma resposta da UGE por mais de 3 segundos, marca OFF
-        uint32_t now_ms = pdTICKS_TO_MS(xTaskGetTickCount());
-        if (g_last_can_msg_ms > 0 && (now_ms - g_last_can_msg_ms) > 500) {
-            g_ihm_state.flags.uge_link_ok = false;
-        } else if (g_last_can_msg_ms > 0) {
-            g_ihm_state.flags.uge_link_ok = true;
-        }
-
-        // --- CONTROLE DO LED DE STATUS (GPIO 2) ---
-        // Conectado: LED aceso fixo
-        // Sem cliente: pisca lento (~1s on / 1s off, ciclo de 40 ticks x 25ms)
-        led_ticks++;
-        if (g_ihm_state.flags.ws_client_connected) {
-            gpio_set_level(STATUS_LED_GPIO, 1); // Aceso fixo
-            led_ticks = 0;
-        } else {
-            // 40 ticks * 25ms = 1000ms por half-cycle
-            gpio_set_level(STATUS_LED_GPIO, (led_ticks < 40) ? 1 : 0);
-            if (led_ticks >= 80) led_ticks = 0;
-        }
+    last_can = g_last_can_msg_ms;
+    uint32_t link_now = pdTICKS_TO_MS(xTaskGetTickCount());
+    g_ihm_state.flags.uge_link_ok =
+        last_can > 0 && (uint32_t)(link_now - last_can) <= 3000;
+    // Uma perda de link durante o teste dispara tentativa de desligamento.
+    if (!g_ihm_state.flags.uge_link_ok && relay_busy()) relay_cancel();
+    if ((uint32_t)(now_ms - published) >= 500) {
+      published = now_ms;
+      web_server_send_update();
     }
+    gpio_set_level(STATUS_LED_GPIO, g_ihm_state.flags.ws_client_connected || ((now_ms / 1000) % 2 == 0));
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
@@ -162,6 +117,7 @@ void app_main(void) {
   // Carrega configurações persistidas antes de iniciar WiFi
   ihm_state_load_from_nvs();
 
+  device_operations_init();
   wifi_manager_init();
   web_server_start();
 

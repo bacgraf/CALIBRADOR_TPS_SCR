@@ -7,6 +7,8 @@ import threading
 import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
+import urllib.request
+from flash_controller import FlashController, firmware_command
 import msal
 import requests
 
@@ -63,7 +65,7 @@ CCS_BASE_DIR = "ccs_base"
 USER_FILES_DIR = "user_files"
 
 # Estado Global do TMS Flash
-flash_status = {"progress": 0, "status": "Idle", "log": [], "error": None}
+flash_controller = FlashController()
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -142,80 +144,6 @@ def upload_to_sharepoint(rows):
             return {"error": f"Graph API Error ({resp_add.status_code}): {resp_add.text}"}
     except Exception as e:
         return {"error": f"Excecao interna: {str(e)}"}
-def run_flash(flash_type, config, product="tps"):
-    global flash_status
-    flash_status = {"progress": 10, "status": f"Iniciando gravação {flash_type.upper()}...", "log": [], "error": None}
-    
-    try:
-        root_path = config.get(f"{product}_root")
-        if not root_path:
-            raise Exception(f"Caminho raiz do {product.upper()} nao configurado.")
-
-        bridge_dir = os.path.dirname(os.path.abspath(__file__))
-        dslite_path = os.path.join(bridge_dir, "ccs_base", "DebugServer", "bin", "DSLite.exe")
-        ccxml_path = os.path.join(bridge_dir, "user_files", "configs", "tms320f28375s.ccxml")
-        
-        firmware_map = {
-            "jiga": config.get(f"{product}_fw_jiga") or ("J2_Vca_montado.out" if product == "scr" else "com.teksea.retificador125.uge-280225A-jiga.out"),
-            "vca_montado": config.get(f"{product}_fw_jiga") or ("J2_Vca_montado.out" if product == "scr" else "com.teksea.retificador125.uge-280225A-jiga.out"),
-            "burnin": config.get(f"{product}_fw_burnin") or ("B1_Burn_in.out" if product == "scr" else "com.teksea.retificador125.uge-280225A-burnin.out"),
-            "cliente": config.get(f"{product}_fw_cliente") or ("C0_Cliente.out" if product == "scr" else "com.teksea.retificador125.uge-280225A-cliente.out")
-        }
-        fw_rel_path = firmware_map.get(flash_type)
-        if not fw_rel_path:
-            raise Exception(f"Firmware '{flash_type}' nao configurado para {product}.")
-            
-        fw_full_path = os.path.join(root_path, fw_rel_path)
-
-        if not os.path.exists(dslite_path):
-            raise Exception(f"DSLite nao encontrado em: {dslite_path}")
-        if not os.path.exists(ccxml_path):
-            raise Exception(f"Arquivo CCXML nao encontrado em: {ccxml_path}")
-        fw_full_path = os.path.join(root_path, fw_rel_path)
-
-        # Busca flexível por palavra-chave se o arquivo exato não existir (case-insensitive)
-        if not os.path.exists(fw_full_path):
-            keyword = (flash_type if flash_type != "vca_montado" else "jiga").lower()
-            found = False
-            for f in os.listdir(root_path):
-                f_low = f.lower()
-                if f_low.endswith(".out") and keyword in f_low:
-                    fw_full_path = os.path.join(root_path, f)
-                    log_debug(f"Arquivo exato nao encontrado. Usando busca por palavra-chave '{keyword}': {f}")
-                    found = True
-                    break
-            if not found:
-                raise Exception(f"Arquivo Firmware contendo '{keyword}' (.out) nao encontrado em: {root_path}")
-
-        cmd = [
-            dslite_path, "flash",
-            "-c", ccxml_path,
-            "-e", "-f", "-v", "--run", fw_full_path
-        ]
-        flash_status["status"] = "Executando DSLite..."
-        flash_status["progress"] = 30
-        
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        
-        for line in process.stdout:
-            clean_line = line.strip()
-            if clean_line:
-                flash_status["log"].append(clean_line)
-                if "Writing at" in clean_line: flash_status["progress"] = 60
-                if "Verified" in clean_line: flash_status["progress"] = 90
-
-        process.wait()
-        if process.returncode == 0:
-            flash_status["progress"] = 100
-            flash_status["status"] = "SUCESSO!"
-        else:
-            flash_status["error"] = "Falha no processo DSLite. Verifique o log."
-            flash_status["status"] = "Erro na Gravacao"
-
-    except Exception as e:
-        flash_status["error"] = str(e)
-        flash_status["status"] = "Falha Critica"
-
 # ============================================================
 # HEARTBEAT & CICLO DE VIDA
 # ============================================================
@@ -226,7 +154,7 @@ def heartbeat_watcher():
         time.sleep(10) # Verifica a cada 10s
         
         # Se o status nao for Idle ou o progresso for > 0, consideramos que esta gravando
-        is_flashing = (flash_status.get("status") != "Idle") and (flash_status.get("progress", 0) < 100)
+        is_flashing = flash_controller.snapshot()['busy']
         
         if not is_flashing and (time.time() - LAST_HEARTBEAT > 60):
             log_debug("Heartbeat expirado (60s). Encerrando Bridge para economizar recursos.")
@@ -243,13 +171,36 @@ def is_already_running():
 # SERVIDOR HTTP
 # ============================================================
 class TekseaHandler(BaseHTTPRequestHandler):
+    def origin_allowed(self):
+        # Validação de origem desativada por decisão operacional.
+        # O código anterior foi mantido abaixo para facilitar uma futura reativação.
+        #
+        # origin = self.headers.get('Origin')
+        # defaults = ['http://192.168.4.1', 'http://192.168.1.100',
+        #             'http://localhost:3000', 'http://127.0.0.1:3000']
+        # allowed = load_config().get('allowed_origins', defaults)
+        # return origin in allowed if origin else self.headers.get('X-Teksea-Local') == '1'
+        return True
+
+    def authorize(self):
+        # A rejeição HTTP 403 por origem foi desativada junto com origin_allowed().
+        # if not self.origin_allowed():
+        #     self.send_json({'error': 'Origem não autorizada. Configure allowed_origins na ponte.'}, 403)
+        #     return False
+        return True
+
     def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
+        if self.headers.get('Origin') and self.origin_allowed():
+            self.send_header('Access-Control-Allow-Origin', self.headers['Origin'])
+            self.send_header('Vary', 'Origin')
+        self.send_header('Cache-Control', 'no-store')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         super().end_headers()
 
     def do_OPTIONS(self):
+        if not self.authorize():
+            return
         self.send_response(200)
         self.end_headers()
 
@@ -260,6 +211,8 @@ class TekseaHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode('utf-8'))
 
     def do_GET(self):
+        if not self.authorize():
+            return
         global LAST_HEARTBEAT
         LAST_HEARTBEAT = time.time() # Qualquer GET renova o tempo de vida
         parsed_path = urllib.parse.urlparse(self.path)
@@ -318,7 +271,9 @@ class TekseaHandler(BaseHTTPRequestHandler):
             })
             
         elif path == '/tms/progress':
-            self.send_json(flash_status)
+            operation_id = urllib.parse.parse_qs(parsed_path.query).get('operation_id', [None])[0]
+            status = flash_controller.snapshot(operation_id)
+            self.send_json(status or {'error': 'Operação não encontrada.'}, 200 if status else 404)
 
         elif path == '/tms/setup':
             # Abre o seletor de pastas (Tkinter)
@@ -351,23 +306,61 @@ class TekseaHandler(BaseHTTPRequestHandler):
             self.send_json({"path": conf.get(f"{prod}_root", "Não configurado")})
 
         elif path == '/tms/flash':
-            query = urllib.parse.parse_qs(parsed_path.query)
-            ftype = query.get('type', ['cliente'])[0]
-            prod = query.get('product', ['tps'])[0]
-            conf = load_config()
-            threading.Thread(target=run_flash, args=(ftype, conf, prod), daemon=True).start()
-            self.send_json({"success": True, "message": "Gravacao iniciada"})
+            self.send_json({'error': 'Atualize a interface: gravação exige POST.'}, 405)
 
         else:
             self.send_json({"error": "Rota nao encontrada"}, 404)
 
     def do_POST(self):
+        if not self.authorize():
+            return
         global LAST_HEARTBEAT
         LAST_HEARTBEAT = time.time() # Qualquer POST renova o tempo de vida
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ""
+        self.connection.settimeout(10)
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if not 0 <= content_length <= 1048576:
+                raise ValueError('Corpo da requisição excede o limite.')
+            post_data = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ""
+        except (ValueError, OSError) as exc:
+            self.send_json({'error': str(exc)}, 400)
+            return
+
+        if path in ('/tms/flash', '/tms/cancel'):
+            try:
+                data = json.loads(post_data)
+                if not isinstance(data, dict):
+                    raise ValueError('Objeto JSON esperado.')
+                operation_id = data.get('operation_id')
+                if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 80:
+                    raise ValueError('Identificador de operação inválido.')
+                if path == '/tms/cancel':
+                    result, code = flash_controller.cancel(operation_id)
+                else:
+                    existing = flash_controller.snapshot(operation_id)
+                    if existing:
+                        self.send_json(existing)
+                        return
+                    product, variant = data.get('product'), data.get('type')
+                    if not isinstance(product, str) or not isinstance(variant, str):
+                        raise ValueError('Produto e variante são obrigatórios.')
+                    command, timeout = firmware_command(load_config(), product, variant, os.path.dirname(__file__))
+                    result, code = flash_controller.start(operation_id, command, timeout,
+                                                          product=product, variant=variant, firmware=command[-1])
+                self.send_json(result, code)
+            except (ValueError, TypeError, OSError) as exc:
+                self.send_json({'error': str(exc)}, 400)
+            return
+
+        if path == '/sys/shutdown':
+            if flash_controller.snapshot()['busy']:
+                self.send_json({'error': 'Cancele a gravação e aguarde a limpeza antes de encerrar.'}, 409)
+            else:
+                self.send_json({'success': True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
 
         if path == '/cloud/token':
             global _current_device_flow
@@ -438,7 +431,7 @@ if __name__ == "__main__":
                         # Acorda o bridge ou repassa comando genérico
                         target = f"http://127.0.0.1:{PORT}/sys/heartbeat"
                     
-                    try: urllib.request.urlopen(target, timeout=2)
+                    try: urllib.request.urlopen(urllib.request.Request(target, headers={'X-Teksea-Local': '1'}), timeout=2)
                     except: pass
             sys.exit(0)
 

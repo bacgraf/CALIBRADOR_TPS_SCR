@@ -3,21 +3,22 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "esp_err.h"
 
 // Struct de Flags de Comportamento
 typedef struct {
     bool ignore_advertise;
     bool debug_print_can;
     bool enable_telemetry;
-    bool relay_test_active;    // Ativa a rotina automática de 3 ciclos
+
     bool ws_client_connected;  // Cliente WebSocket ativo (para LED de status)
     bool uge_link_ok;          // Link CAN com a UGE ativo (timeout 3s)
 } ihm_flags_t;
 
 // Configurações de Rede e Sistema (Persistidas em NVS)
 typedef struct {
-    char wifi_ssid[32];
-    char wifi_pass[64];
+    char wifi_ssid[33];
+    char wifi_pass[65];
     char static_ip[16];
     char static_gw[16];
     char static_mask[16];
@@ -81,7 +82,8 @@ typedef struct __attribute__((packed)) {
 extern ihm_state_t g_ihm_state;
 
 void ihm_state_update_register(uint16_t reg, int32_t raw_value);
-void ihm_state_save_to_nvs(void);
+bool ihm_settings_valid(const ihm_settings_t *settings);
+esp_err_t ihm_state_save_to_nvs(const ihm_settings_t *settings);
 void ihm_state_load_from_nvs(void);
 
 #endif // IHM_STATE_H

@@ -17,3 +17,11 @@ TPS 125/true
 TEKSEA_BRIDGE/ccs_base/
 node_modules/
 dist/
+
+# Backups recuperáveis da publicação e resultados de testes locais
+.data-backup-*/
+.data-staging-*/
+__pycache__/
+test/host/*.exe
+test/host/*.pdb
+test/host/*.obj

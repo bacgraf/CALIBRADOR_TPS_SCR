@@ -7,6 +7,9 @@
 #include "esp_spiffs.h"
 #include "esp_wifi.h"
 #include "ihm_state.h"
+#include "device_operations.h"
+#include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -61,6 +64,10 @@ static esp_err_t common_get_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/csv");
   else if (strstr(uri, ".json"))
     httpd_resp_set_type(req, "application/json");
+  else if (strstr(uri, ".bat")) {
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"instalar_bridge.bat\"");
+  }
 
   FILE *f = fopen(filepath, "r");
   if (f == NULL) {
@@ -83,6 +90,25 @@ static esp_err_t common_get_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static void command_reply(httpd_req_t *req, cJSON *command, bool success, const char *message) {
+  cJSON *reply = cJSON_CreateObject();
+  if (!reply) return;
+  cJSON_AddStringToObject(reply, "type", "command_result");
+  cJSON *id = cJSON_GetObjectItem(command, "request_id");
+  cJSON *name = cJSON_GetObjectItem(command, "command");
+  if (cJSON_IsString(id)) cJSON_AddStringToObject(reply, "request_id", id->valuestring);
+  if (cJSON_IsString(name)) cJSON_AddStringToObject(reply, "command", name->valuestring);
+  cJSON_AddBoolToObject(reply, "success", success);
+  cJSON_AddStringToObject(reply, "message", message);
+  char *json = cJSON_PrintUnformatted(reply);
+  if (json) {
+    httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)json, .len = strlen(json)};
+    httpd_ws_send_frame(req, &frame);
+    free(json);
+  }
+  cJSON_Delete(reply);
+}
+
 static esp_err_t ws_handler(httpd_req_t *req) {
   if (req->method == HTTP_GET) {
     ESP_LOGI(TAG, "Conexão WebSocket aceita (FD: %d).",
@@ -103,6 +129,7 @@ static esp_err_t ws_handler(httpd_req_t *req) {
   }
 
   // Se o frame tiver dados (Comando vindo do Navegador)
+  if (ws_pkt.len > 4096) return ESP_ERR_INVALID_SIZE;
   if (ws_pkt.len > 0) {
     buf = calloc(1, ws_pkt.len + 1);
     if (buf == NULL)
@@ -147,12 +174,15 @@ static esp_err_t ws_handler(httpd_req_t *req) {
             cJSON *reg = cJSON_GetObjectItem(root, "reg");
             cJSON *fmt = cJSON_GetObjectItem(root, "format");
             cJSON *val = cJSON_GetObjectItem(root, "value");
-            if (cJSON_IsNumber(reg) && cJSON_IsNumber(fmt) &&
-                cJSON_IsNumber(val)) {
-              // O drive agora aceita float, então passamos o valor bruto
-              can_protocol_transmit_req_write(reg->valueint, fmt->valueint,
-                                              (float)val->valuedouble);
-            }
+            bool valid = cJSON_IsNumber(reg) && cJSON_IsNumber(fmt) && cJSON_IsNumber(val) &&
+                         isfinite(reg->valuedouble) && reg->valuedouble >= 0 && reg->valuedouble <= 1023 &&
+                         trunc(reg->valuedouble) == reg->valuedouble &&
+                         (fmt->valuedouble == 2 || fmt->valuedouble == 4 || fmt->valuedouble == 5);
+            // Escritas manuais não podem disputar os registradores de uma operação.
+            bool ok = valid && device_operations_manual_write(reg->valueint, fmt->valueint, val->valuedouble);
+            command_reply(req, root, ok, ok ? "Comando enviado ao CAN; aplicação não confirmada." :
+                                            "Escrita inválida, operação em andamento ou falha de envio.");
+
           }
           // 3. PERSISTÊNCIA NA CPU (FLASH)
           else if (strcmp(cmd->valuestring, "write_cpu") == 0) {
@@ -161,8 +191,23 @@ static esp_err_t ws_handler(httpd_req_t *req) {
           }
           // 4. INICIAR TESTE AUTOMÁTICO
           else if (strcmp(cmd->valuestring, "start_test") == 0) {
-            g_ihm_state.flags.relay_test_active = true;
-            ESP_LOGI(TAG, "### TESTE AUTOMÁTICO INICIADO PELO USUÁRIO ###");
+            bool ok = g_ihm_state.flags.uge_link_ok && relay_start();
+            command_reply(req, root, ok, ok ? "Teste iniciado." : "Sem link CAN ou operação em andamento.");
+          }
+          else if (strcmp(cmd->valuestring, "cancel_test") == 0) {
+            relay_cancel();
+            command_reply(req, root, true, "Desligamento das saídas solicitado.");
+          }
+          else if (strcmp(cmd->valuestring, "sync_serial") == 0) {
+            cJSON *value = cJSON_GetObjectItem(root, "value");
+            cJSON *id = cJSON_GetObjectItem(root, "request_id");
+            bool valid = cJSON_IsNumber(value) && isfinite(value->valuedouble) &&
+                         value->valuedouble >= 0 && value->valuedouble <= UINT32_MAX &&
+                         trunc(value->valuedouble) == value->valuedouble &&
+                         cJSON_IsString(id) && strlen(id->valuestring) > 0 && strlen(id->valuestring) <= 64;
+            bool ok = valid && g_ihm_state.flags.uge_link_ok && serial_start((uint32_t)value->valuedouble, id->valuestring);
+            command_reply(req, root, ok, ok ? "Aguardando confirmação dos dois registradores." :
+                                            "Número inválido, sem link CAN ou operação em andamento.");
           }
           // 5. CONFIGURAÇÃO DE WIFI/REDE
           else if (strcmp(cmd->valuestring, "save_wifi") == 0) {
@@ -173,16 +218,29 @@ static esp_err_t ws_handler(httpd_req_t *req) {
             cJSON *mask = cJSON_GetObjectItem(root, "mask");
             cJSON *dhcp = cJSON_GetObjectItem(root, "dhcp");
 
-            if (ssid && pass && ip && gw && mask) {
-              strncpy(g_ihm_state.settings.wifi_ssid, ssid->valuestring, 32);
-              strncpy(g_ihm_state.settings.wifi_pass, pass->valuestring, 64);
-              strncpy(g_ihm_state.settings.static_ip, ip->valuestring, 16);
-              strncpy(g_ihm_state.settings.static_gw, gw->valuestring, 16);
-              strncpy(g_ihm_state.settings.static_mask, mask->valuestring, 16);
-              if (dhcp) g_ihm_state.settings.dhcp_enabled = cJSON_IsTrue(dhcp) ? 1 : 0;
-              ihm_state_save_to_nvs();
-              ESP_LOGI(TAG, "Configurações de WiFi salvas: Reinicie para aplicar.");
+            bool valid = cJSON_IsString(ssid) && cJSON_IsString(pass) && cJSON_IsString(ip) &&
+                         cJSON_IsString(gw) && cJSON_IsString(mask) && cJSON_IsBool(dhcp);
+            ihm_settings_t candidate = {0};
+            if (valid) {
+              valid = strlen(ssid->valuestring) <= 32 && strlen(pass->valuestring) <= 64 &&
+                      strlen(ip->valuestring) < 16 && strlen(gw->valuestring) < 16 && strlen(mask->valuestring) < 16;
             }
+            if (valid) {
+              strcpy(candidate.wifi_ssid, ssid->valuestring);
+              strcpy(candidate.wifi_pass, pass->valuestring);
+              strcpy(candidate.static_ip, ip->valuestring);
+              strcpy(candidate.static_gw, gw->valuestring);
+              strcpy(candidate.static_mask, mask->valuestring);
+              candidate.dhcp_enabled = cJSON_IsTrue(dhcp);
+              candidate.ap_enabled = 1;
+              valid = ihm_settings_valid(&candidate);
+            }
+            esp_err_t err = valid ? ihm_state_save_to_nvs(&candidate) : ESP_ERR_INVALID_ARG;
+            command_reply(req, root, err == ESP_OK, err == ESP_OK ?
+                          "Configurações salvas. Reinicie o ESP32 para aplicar." :
+                          (valid ? "Falha ao persistir configuração no NVS." :
+                                   "Configuração inválida: confira tipos, senha, IP, máscara e gateway."));
+
           }
           // 6. ESCANEAMENTO DE REDES
           else if (strcmp(cmd->valuestring, "scan_wifi") == 0) {
@@ -277,12 +335,30 @@ esp_err_t web_server_start(void) {
   return ESP_FAIL;
 }
 
-void web_server_send_update(void) {
+static void send_update(void) {
   if (!server)
     return;
 
   // 1. Cria objeto cJSON com os dados atuais
   cJSON *root = cJSON_CreateObject();
+  if (!root) return;
+
+  serial_status_t serial;
+  relay_status_t relay;
+  device_operations_snapshot(&serial, &relay);
+  cJSON *serial_json = cJSON_AddObjectToObject(root, "serial");
+  cJSON_AddStringToObject(serial_json, "request_id", serial.request_id);
+  cJSON_AddNumberToObject(serial_json, "value", serial.value);
+  cJSON_AddBoolToObject(serial_json, "busy", serial.busy);
+  cJSON_AddBoolToObject(serial_json, "cpu_ok", serial.cpu_ok);
+  cJSON_AddBoolToObject(serial_json, "uge_ok", serial.uge_ok);
+  cJSON_AddBoolToObject(serial_json, "success", serial.success);
+  cJSON_AddStringToObject(serial_json, "message", serial.message);
+  cJSON *relay_json = cJSON_AddObjectToObject(root, "relay");
+  cJSON_AddBoolToObject(relay_json, "active", relay.active);
+  cJSON_AddBoolToObject(relay_json, "stopping", relay.stopping);
+  cJSON_AddBoolToObject(relay_json, "off_confirmed", relay.off_confirmed);
+  cJSON_AddStringToObject(relay_json, "message", relay.message);
 
   // --- TELEMETRIA DE ALTA PRECISÃO (Dashboard Web) ---
   // AVISO: Não alterar estes multiplicadores. A precisão de 0.01 no dashboard
@@ -426,11 +502,14 @@ void web_server_send_update(void) {
     size_t max_clients = 10;
     int fds[10];
     int ws_count = 0;
-    httpd_get_client_list(server, &max_clients, fds);
+    if (httpd_get_client_list(server, &max_clients, fds) != ESP_OK) max_clients = 0;
     for (size_t i = 0; i < max_clients; i++) {
       if (httpd_ws_get_fd_info(server, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
-        httpd_ws_send_frame_async(server, fds[i], &ws_pkt);
-        ws_count++;
+        if (httpd_ws_send_frame_async(server, fds[i], &ws_pkt) == ESP_OK) {
+          ws_count++;
+        } else {
+          httpd_sess_trigger_close(server, fds[i]);
+        }
       }
     }
     // Atualiza flag de conectividade para o LED de status
@@ -438,4 +517,18 @@ void web_server_send_update(void) {
     free(json_str);
   }
   cJSON_Delete(root);
+}
+
+static atomic_bool update_queued = false;
+static void send_update_work(void *arg) {
+  (void)arg;
+  send_update();
+  atomic_store(&update_queued, false);
+}
+
+void web_server_send_update(void) {
+  if (!server || atomic_exchange(&update_queued, true)) return;
+  // Serializa broadcast e respostas de comandos na própria tarefa HTTP.
+  if (httpd_queue_work(server, send_update_work, NULL) != ESP_OK)
+    atomic_store(&update_queued, false);
 }

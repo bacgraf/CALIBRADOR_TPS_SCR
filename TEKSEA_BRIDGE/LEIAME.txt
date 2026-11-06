@@ -1,0 +1,304 @@
+================================================================================
+  TEKSEA BRIDGE - GUIA DE INSTALACAO E OPERACAO
+  Calibrador TPS125 / SCR
+  Versao: 2.0 | Junho/2026
+================================================================================
+
+
+VISAO GERAL
+-----------
+O Teksea Bridge e um programa Python que roda silenciosamente em segundo plano
+no computador do operador. Ele e necessario para que o Painel Web de Calibracao
+(acessado via navegador, servido pelo ESP32) consiga:
+
+  - Gravar firmware no DSP da placa (Texas Instruments TMS320F28375S) via
+    o utilitario DSLite.exe (embutido na pasta ccs_base\).
+  - Enviar dados de lote de producao (numeros de serie, versao de firmware,
+    cliente, etc.) diretamente para a planilha Excel do SharePoint corporativo
+    da Teksea, usando autenticacao Microsoft segura.
+
+O Bridge funciona como um servidor local na porta 8760 (http://127.0.0.1:8760).
+O navegador se comunica com ele por dentro do proprio PC, sem expor dados
+para a internet.
+
+
+================================================================================
+CONTEUDO DA PASTA
+================================================================================
+
+  LEIAME.txt                        -> Este arquivo.
+  teksea_bridge.py                  -> O programa principal da ponte (Python).
+  install_TPS_SCR_calibrador.bat    -> Instalador do Bridge no Windows.
+  uninstall_TPS_SCR_calibrador.bat  -> Desinstalador completo.
+  one_time_setup.bat                -> Instalador dos drivers USB do gravador.
+  dslite-C28xx_CPU1.bat             -> Atalho para acionar o DSLite manualmente.
+  dpinst_64_eng.exe                 -> Instalador dos drivers USB (Texas Inst.).
+  config.json                       -> Configuracoes persistidas (caminhos das
+                                       pastas de firmware). Gerado automaticamente
+                                       pelo proprio bridge ao usar o seletor de pasta.
+  ms_cache.bin                      -> Cache de autenticacao Microsoft (gerado
+                                       automaticamente apos o primeiro login).
+  bridge_error.log                  -> Log de erros internos do Bridge (util
+                                       para diagnosticar problemas).
+
+  ccs_base\                         -> Pacote do Debug Server da Texas Instruments.
+                                       Contem o DSLite.exe e todas as suas
+                                       dependencias. NAO MOVER NEM RENOMEAR.
+
+  user_files\
+    configs\tms320f28375s.ccxml     -> Arquivo de configuracao do hardware do
+                                       gravador JTAG para o DSP TMS320F28375S.
+                                       NAO ALTERAR.
+    settings\generated.ufsettings   -> Configuracoes opcionais do DSLite. Melhora
+                                       a confiabilidade da conexao. NAO ALTERAR.
+    images\                         -> (OPCIONAL) Pasta para colocar arquivos
+                                       de firmware .out caso nao queira usar
+                                       o seletor de pastas do Painel Web.
+
+
+================================================================================
+PRE-REQUISITOS (ANTES DE INSTALAR)
+================================================================================
+
+  1. SISTEMA OPERACIONAL
+     Windows 10 ou Windows 11 (64-bit).
+
+  2. PYTHON 3.11
+     O interpretador Python DEVE estar instalado na versao 3.11.
+     Durante a instalacao do Python, MARQUE a opcao:
+       [x] Add Python to PATH
+     Download oficial: https://www.python.org/downloads/release/python-3119/
+     (Procure por "Windows installer (64-bit)" na pagina acima.)
+
+     IMPORTANTE: Versoes diferentes de Python (3.10, 3.12, 3.13...) podem
+     funcionar, mas a versao 3.11 e a homologada e recomendada.
+
+  3. CONEXAO COM A INTERNET (apenas durante a instalacao)
+     Necessaria para que o pip baixe as bibliotecas Python (msal, requests).
+
+  4. CONTA MICROSOFT CORPORATIVA (para envio de dados ao SharePoint)
+     A funcionalidade de envio de lote para o Excel do SharePoint requer
+     login com conta @teksea.com.br. O login e feito diretamente no Painel
+     Web, nao e necessario configurar nada antes.
+
+
+================================================================================
+PASSO A PASSO - INSTALACAO COMPLETA (PC NOVO)
+================================================================================
+
+--- PASSO 1: INSTALAR O PYTHON 3.11 ---
+
+  1.1. Acesse https://www.python.org/downloads/release/python-3119/ e baixe
+       o arquivo "Windows installer (64-bit)".
+  1.2. Execute o instalador.
+  1.3. Na primeira tela do instalador, MARQUE a caixa:
+         [x] Add Python.exe to PATH
+  1.4. Clique em "Install Now" e aguarde a conclusao.
+  1.5. Para confirmar que funcionou, abra o Prompt de Comando (cmd.exe) e
+       digite:  python --version
+       Deve aparecer: Python 3.11.x
+
+
+--- PASSO 2: INSTALAR OS DRIVERS USB DO GRAVADOR JTAG ---
+
+  Este passo permite que o Windows reconheca o cabo gravador (XDS100/XDS110)
+  da Texas Instruments quando ele for conectado via USB.
+
+  2.1. Na pasta TEKSEA_BRIDGE, clique com o botao DIREITO em:
+         one_time_setup.bat
+  2.2. Selecione "Executar como administrador".
+  2.3. Uma janela do DOS vai abrir, instalar os drivers e fechar sozinha.
+  2.4. Se aparecer uma janela do Windows pedindo confirmacao de "Driver nao
+       assinado", clique em "Instalar assim mesmo" ou "Continuar".
+
+  NOTA: Este passo so precisa ser feito UMA UNICA VEZ por computador.
+  Se o driver ja estiver instalado, o script nao causa nenhum problema ao
+  ser executado novamente.
+
+
+--- PASSO 3: INSTALAR O BRIDGE (PROTOCOLO E DEPENDENCIAS) ---
+
+  3.1. Na pasta TEKSEA_BRIDGE, clique com o botao DIREITO em:
+         install_TPS_SCR_calibrador.bat
+  3.2. Selecione "Executar como administrador".
+  3.3. O instalador vai executar 5 passos automaticamente:
+
+       [1/5] Verifica se o Python 3.11 esta no PATH.
+             - Se a versao nao for 3.11, ele pergunta se deseja continuar.
+
+       [2/5] Instala as bibliotecas Python necessarias via pip:
+             - msal    (autenticacao Microsoft para o SharePoint)
+             - requests (comunicacao HTTP)
+             Aguarde o download. Requer internet.
+
+       [3/5] Registra o protocolo personalizado teksea:// no Windows.
+             Isso permite que o Painel Web acorde o Bridge automaticamente
+             quando necessario, sem interacao do usuario.
+
+       [4/5] Libera o protocolo teksea:// nos navegadores Google Chrome
+             e Microsoft Edge via Politicas de Grupo (Group Policies).
+             Isso elimina os popups de confirmacao toda vez que o Painel
+             Web se comunicar com o Bridge local.
+
+       [5/5] Remove protocolos legados (tms-flash://, teksea-sn://) de
+             instalacoes antigas. Operacao de limpeza, nao afeta nada se
+             nao existirem.
+
+  3.4. Ao final, deve aparecer a mensagem:
+         INSTALACAO CONCLUIDA! Pode abrir o Calibrador agora.
+  3.5. Feche a janela.
+
+
+--- PASSO 4: VERIFICAR A INSTALACAO ---
+
+  4.1. Abra o Prompt de Comando (cmd.exe) e execute:
+         python -c "import msal, requests; print('OK')"
+       Deve aparecer: OK
+
+  4.2. Conecte o cabo USB do gravador JTAG ao computador e verifique no
+       Gerenciador de Dispositivos do Windows se ele aparece sem o icone
+       de erro (ponto de exclamacao amarelo). Deve aparecer como:
+         "XDS100 Class USB Serial Bridge" (ou similar) em "Portas (COM e LPT)"
+
+
+================================================================================
+COMO O BRIDGE FUNCIONA NA PRATICA
+================================================================================
+
+O Teksea Bridge NAO precisa ser aberto manualmente pelo operador. Ele e
+acionado automaticamente pelo proprio Painel Web quando necessario.
+
+  INICIO AUTOMATICO:
+  - Quando o operador clica no botao "GRAVAR FIRMWARE" no Painel Web,
+    o navegador dispara o protocolo teksea:// que o Windows registrou.
+  - O Windows invoca o teksea_bridge.py silenciosamente (sem janela).
+  - O Bridge sobe o servidor local na porta 8760 e responde ao Painel Web.
+
+  INSTANCIA UNICA:
+  - Se o Bridge ja estiver rodando e for invocado de novo, a nova instancia
+    detecta que a porta 8760 ja esta ocupada, repassa o comando para a
+    instancia principal e fecha. Nunca ha dois Bridges rodando ao mesmo tempo.
+
+  ENCERRAMENTO AUTOMATICO:
+  - O Bridge monitora a atividade do Painel Web. Se nenhum sinal for recebido
+    por 60 segundos (o usuario fechou o navegador ou mudou de aba), o Bridge
+    se encerra sozinho para liberar recursos do computador.
+  - EXCECAO: Se uma gravacao de firmware estiver em andamento, o Bridge
+    NUNCA se encerra, mesmo que o navegador feche.
+
+  ARQUIVO DE LOG:
+  - Qualquer erro interno e registrado no arquivo bridge_error.log, que fica
+    na mesma pasta do teksea_bridge.py. Util para diagnosticar falhas.
+
+
+================================================================================
+PRIMEIRO USO - CONFIGURAR PASTA DE FIRMWARE
+================================================================================
+
+Na primeira vez que o operador clicar em "GRAVAR FIRMWARE" no Painel Web, o
+Bridge vai pedir para que ele selecione a pasta onde estao os arquivos de
+firmware (.out) de cada produto. Esta configuracao e salva automaticamente no
+arquivo config.json e nao precisa ser feita novamente.
+
+  - Para o produto TPS125: selecionar a pasta que contem os arquivos
+    de firmware da UGE TPS125 (arquivos terminados em .out com as palavras
+    "jiga", "burnin" ou "cliente" no nome).
+
+  - Para o produto SCR: selecionar a pasta correspondente da UGE SCR.
+
+O Bridge busca automaticamente o arquivo .out mais recente (por data de
+modificacao) que contenha a palavra-chave correspondente ao tipo de gravacao
+solicitado (ex: "burnin" para gravar o firmware de Burn-in).
+
+
+================================================================================
+PRIMEIRO LOGIN NA MICROSOFT (SHAREPOINT)
+================================================================================
+
+Para usar a funcao de registrar lotes de producao no Excel do SharePoint:
+
+  1. No Painel Web, acesse o modal de "Gerenciar Lote de Producao".
+  2. Clique em "ENTRAR" na secao "Cloud / Bridge Python".
+  3. O Bridge vai gerar um codigo de 8 letras (ex: A23BCDEF) e um link.
+  4. Abra o link https://microsoft.com/devicelogin em qualquer dispositivo
+     (celular, outra aba do navegador) e insira o codigo exibido.
+  5. Faca login com sua conta Microsoft corporativa (@teksea.com.br).
+  6. O Painel Web confirmara o login automaticamente.
+
+O Bridge salva o token de acesso no arquivo ms_cache.bin. Nas proximas
+sessoes, o login e feito automaticamente sem precisar repetir o processo,
+ate que o token expire (normalmente 90 dias).
+
+
+================================================================================
+DESINSTALACAO
+================================================================================
+
+  1. Na pasta TEKSEA_BRIDGE, clique com o botao DIREITO em:
+       uninstall_TPS_SCR_calibrador.bat
+  2. Selecione "Executar como administrador".
+  3. O desinstalador remove o protocolo teksea:// do Registro do Windows
+     e as politicas de liberacao nos navegadores Chrome e Edge.
+
+  NOTA: Os arquivos Python, drivers e a pasta ccs_base\ NAO sao removidos
+  automaticamente. Apague a pasta TEKSEA_BRIDGE manualmente se desejar.
+
+
+================================================================================
+SOLUCAO DE PROBLEMAS COMUNS
+================================================================================
+
+  PROBLEMA: "Python nao encontrado no PATH!"
+  SOLUCAO:  Reinstale o Python 3.11 e marque a opcao "Add to PATH".
+            Ou adicione manualmente o Python ao PATH do Windows.
+
+  PROBLEMA: O Bridge nao abre / o botao de Gravar nao responde.
+  SOLUCAO:  1. Verifique se a instalacao do passo 3 foi concluida com sucesso.
+            2. Tente abrir manualmente o teksea_bridge.py com o Python:
+                 python teksea_bridge.py
+               Veja se aparece algum erro no terminal.
+            3. Consulte o arquivo bridge_error.log para detalhes.
+
+  PROBLEMA: "Erro ao instalar dependencias" no passo [2/5].
+  SOLUCAO:  Verifique a conexao com a internet. Tente manualmente:
+              python -m pip install msal requests
+            Se houver proxy corporativo, configure-o antes no pip.
+
+  PROBLEMA: O navegador pede confirmacao toda vez para abrir o teksea://.
+  SOLUCAO:  O passo [4/5] do instalador pode ter falhado (requer admin).
+            Re-execute o install_TPS_SCR_calibrador.bat como Administrador.
+            Certifique-se que a versao do Chrome/Edge e gerenciavel por
+            politicas de grupo.
+
+  PROBLEMA: Gravador JTAG nao reconhecido / erro no DSLite.
+  SOLUCAO:  1. Execute o one_time_setup.bat como Administrador novamente.
+            2. Desconecte e reconecte o cabo USB do gravador.
+            3. Verifique no Gerenciador de Dispositivos se o driver aparece
+               sem erro (sem ponto de exclamacao amarelo).
+            4. Tente outra porta USB (de preferencia USB 2.0).
+
+  PROBLEMA: "Arquivo CCXML nao encontrado" na gravacao.
+  SOLUCAO:  O arquivo user_files\configs\tms320f28375s.ccxml deve existir.
+            Nao mova nem renomeie nenhuma subpasta dentro de TEKSEA_BRIDGE.
+
+  PROBLEMA: Erro de autenticacao Microsoft / login nao funciona.
+  SOLUCAO:  Delete o arquivo ms_cache.bin e faca o login novamente pelo
+            Painel Web.
+
+
+================================================================================
+SUPORTE
+================================================================================
+
+  Em caso de duvidas ou problemas nao cobertos neste guia, contate o
+  responsavel pelo desenvolvimento do sistema na Teksea.
+
+  Informacoes de depuracao uteis para reportar um problema:
+    - Conteudo do arquivo bridge_error.log
+    - Versao do Python: python --version
+    - Sistema Operacional e versao do navegador utilizado
+
+
+================================================================================
+  FIM DO DOCUMENTO
+================================================================================

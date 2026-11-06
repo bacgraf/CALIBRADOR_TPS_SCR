@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Info, ShieldAlert, Zap, ClipboardList, LogOut, User, LogIn, Cloud } from 'lucide-react';
+import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Info, ShieldAlert, Zap, ClipboardList, LogOut, User, LogIn, Cloud, Clock, Download } from 'lucide-react';
 import { dicionarioFalhas } from './lib/falhas';
 import { useWebSocket } from './lib/useWebSocket';
+import { useFlashController } from './lib/useFlashController';
 import { GraphAuth } from './services/microsoftGraph/auth';
 import { GraphExcel } from './services/microsoftGraph/excel';
 
@@ -147,12 +148,17 @@ const SensorBlock = ({
   );
 };
 
-const SelectionScreen = ({ onSelect, onOpenWifi }: { onSelect: (mode: 'tps' | 'scr') => void, onOpenWifi: () => void }) => {
+const SelectionScreen = ({ onSelect, onOpenWifi, systemTime }: { onSelect: (mode: 'tps' | 'scr') => void, onOpenWifi: () => void, systemTime: string }) => {
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 relative overflow-hidden">
       {/* Background Decor */}
       <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 rounded-full blur-[120px]" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/10 rounded-full blur-[120px]" />
+
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-1.5 bg-slate-900/70 border border-slate-700/80 rounded-full text-slate-200 shadow-lg backdrop-blur-md">
+        <Clock size={14} className="text-blue-400" />
+        <span className="text-sm font-mono font-bold tracking-wider">{systemTime}</span>
+      </div>
 
       <div className="absolute top-4 right-4 z-20">
         <button
@@ -468,29 +474,72 @@ const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) =>
 
 export default function App() {
   const [bridgeAlive, setBridgeAlive] = useState(false);
+  const [bridgeStarting, setBridgeStarting] = useState(false);
+  const [bridgeInstallNeeded, setBridgeInstallNeeded] = useState(false);
+  const bridgeAutoStarted = useRef(false);
+  const bridgeStartTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [cloudUser, setCloudUser] = useState<string | null>(null);
   const [bridgePaths, setBridgePaths] = useState({ tps: '', scr: '' });
   const [rebootTarget, setRebootTarget] = useState<number | null>(null);
+  const [systemTime, setSystemTime] = useState(() =>
+    new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  );
 
-  // Polling global para status do Bridge e Nuvem
+  useEffect(() => {
+    const clockInterval = setInterval(() => {
+      setSystemTime(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    }, 1000);
+    return () => clearInterval(clockInterval);
+  }, []);
+
+  const triggerBridgeStart = useCallback(() => {
+    setBridgeStarting(true);
+    if (bridgeStartTimeout.current) clearTimeout(bridgeStartTimeout.current);
+    try {
+      window.location.href = 'teksea://start';
+    } catch {
+      // Ignora falha de protocolo não registrado
+    }
+    bridgeStartTimeout.current = setTimeout(() => {
+      setBridgeStarting(false);
+      setBridgeInstallNeeded(true);
+    }, 6000);
+  }, []);
+
+  // Polling global para status do Bridge e Nuvem (com tentativa automática de abertura no carregamento)
   useEffect(() => {
     const checkStatus = () => {
       fetch('http://127.0.0.1:8760/sys/status')
         .then(res => res.json())
         .then(data => {
-          setBridgeAlive(data.bridge_alive);
+          setBridgeAlive(Boolean(data.bridge_alive));
+          if (data.bridge_alive) {
+            setBridgeStarting(false);
+            setBridgeInstallNeeded(false);
+            if (bridgeStartTimeout.current) {
+              clearTimeout(bridgeStartTimeout.current);
+              bridgeStartTimeout.current = null;
+            }
+          }
           setCloudUser(data.ms_logged_in ? data.ms_username : null);
           setBridgePaths({ tps: data.tps_root, scr: data.scr_root });
         })
         .catch(() => {
           setBridgeAlive(false);
           setCloudUser(null);
+          if (!bridgeAutoStarted.current) {
+            bridgeAutoStarted.current = true;
+            triggerBridgeStart();
+          }
         });
     };
     checkStatus();
-    const interval = setInterval(checkStatus, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    const interval = setInterval(checkStatus, 3000);
+    return () => {
+      clearInterval(interval);
+      if (bridgeStartTimeout.current) clearTimeout(bridgeStartTimeout.current);
+    };
+  }, [triggerBridgeStart]);
   const [appMode, setAppMode] = useState<'selection' | 'tps' | 'scr'>(() => {
     return (localStorage.getItem('calibrador_mode') as 'tps' | 'scr') || 'selection';
   });
@@ -521,7 +570,7 @@ export default function App() {
   };
 
   const wsUrl = `ws://${window.location.hostname}/ws`;
-  const { data, connected, send } = useWebSocket(wsUrl);
+  const { data, connected, send, request } = useWebSocket(wsUrl);
 
   const [refVcc, setRefVcc] = useState('125.00');
   const [refIcc, setRefIcc] = useState('60.00');
@@ -589,17 +638,25 @@ export default function App() {
     }
   }, [data.type]);
 
-  const saveWifi = () => {
-    if (window.confirm("As novas configurações de rede serão salvas. Deseja prosseguir? A aplicação de rede será reiniciada.")) {
-      send({ command: "save_wifi", ...wifiConfig });
-      setShowWifiModal(false);
-    }
+  const [wifiSaving, setWifiSaving] = useState(false);
+  const [wifiMessage, setWifiMessage] = useState('');
+  const saveWifi = async () => {
+    if (wifiSaving) return;
+    setWifiSaving(true);
+    setWifiMessage('');
+    try {
+      const result = await request({ command: 'save_wifi', ...wifiConfig });
+      setWifiMessage(result.message);
+    } catch (error) {
+      setWifiMessage(error instanceof Error ? error.message : 'Falha ao salvar configuração.');
+    } finally { setWifiSaving(false); }
   };
 
-  const [isFlashing, setIsFlashing] = useState(false);
-  const [flashProgress, setFlashProgress] = useState(0);
-  const [flashStatus, setFlashStatus] = useState('Aguardando início...');
-  const [flashLog, setFlashLog] = useState<string[]>([]);
+  const { operation: flashOperation, notice: flashNotice, isFlashing, canStart: canStartFlash,
+    start: startFlash, cancel: cancelFlash, openBridge, openingBridge } = useFlashController(showFlashModal);
+  const flashProgress = flashOperation.progress;
+  const flashStatus = flashOperation.error ? flashOperation.status + ': ' + flashOperation.error : flashOperation.status;
+  const flashLog = flashOperation.log;
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -616,7 +673,7 @@ export default function App() {
     setter((num / Math.pow(10, decimals)).toFixed(decimals));
   };
 
-  const isOff = !data.uge_ok;
+  const isOff = !connected || !data.uge_ok;
 
   const writeReg = useCallback((reg: number, format: number, val: number) => {
     if (!connected || isNaN(val)) return;
@@ -625,7 +682,7 @@ export default function App() {
   }, [connected, send]);
 
   const calibrateGain = useCallback((sensor: string, refValStr: string) => {
-    if (!data || !connected) return;
+    if (!data || !connected || !data.uge_ok) return;
     const refVal = parseFloat(refValStr);
     if (isNaN(refVal)) return;
 
@@ -658,7 +715,7 @@ export default function App() {
   }, [data, connected, send]);
 
   const autoAdjust = useCallback((sensor: string) => {
-    if (!data || !connected) return;
+    if (!data || !connected || !data.uge_ok) return;
     let reg, val;
     if (sensor === 'vret') { reg = 133; val = (data.ov1 || 0) - (data.vret); }
     else if (sensor === 'vcc2') { reg = 135; val = (data.ov2 || 0) - (data.vbat); }
@@ -691,7 +748,7 @@ export default function App() {
     const seq = groups[group];
     if (!seq) return;
     seq.forEach((it, i) => setTimeout(() => calibrateGain(it.s, it.r), i * 500));
-  }, [refVcc, refIcc, refVca, refIca, calibrateGain]);
+  }, [appMode, scrSubMode, refVcc, refIcc, refVca, refIca, calibrateGain]);
 
   const calibrateAll = useCallback(() => {
     const sequence = appMode === 'tps' ? [
@@ -707,14 +764,14 @@ export default function App() {
       { s: 'ica_r', r: refIca }, { s: 'ica_t', r: refIca }
     ];
     sequence.forEach((it, i) => setTimeout(() => calibrateGain(it.s, it.r), i * 500));
-  }, [appMode, refVcc, refIcc, refVca, refIca, calibrateGain]);
+  }, [appMode, scrSubMode, refVcc, refIcc, refVca, refIca, calibrateGain]);
 
   const autoAdjustAll = useCallback(() => {
     const list = appMode === 'tps'
       ? ['vret', 'vcons', 'iret', 'ibat']
       : ['vret', 'vcc2', 'vcons', 'iret', ...(scrSubMode === '12' ? ['iret2'] : []), 'ibat'];
     list.forEach((s, i) => setTimeout(() => autoAdjust(s), i * 500));
-  }, [appMode, autoAdjust]);
+  }, [appMode, scrSubMode, autoAdjust]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -738,47 +795,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (showFlashModal && !isFlashing) {
-      fetch('http://127.0.0.1:8760/tms/check')
-        .then(res => res.json())
-        .then(d => setFwAvailable({ jiga: !!d.jiga, burnin: !!d.burnin, cliente: !!d.cliente }))
-        .catch(err => {
-          console.log('Bridge offline, tentando despertar...', err);
-          // Dispara o protocolo para acordar o Bridge se ele estiver OFF
-          window.location.href = "teksea://start";
-        });
-    }
-  }, [showFlashModal, isFlashing]);
+    setFwAvailable({ jiga: false, burnin: false, cliente: false });
+    if (!showFlashModal || !canStartFlash) return;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 4000);
+    fetch('http://127.0.0.1:8760/tms/check', { signal: abort.signal, cache: 'no-store' })
+      .then(res => {
+        if (!res.ok) throw new Error('Falha ao consultar firmwares');
+        return res.json();
+      })
+      .then(d => {
+        if (!abort.signal.aborted) setFwAvailable({ jiga: d.jiga === true, burnin: d.burnin === true, cliente: d.cliente === true });
+      })
+      .catch(() => {})
+      .finally(() => clearTimeout(timer));
+    return () => { abort.abort(); clearTimeout(timer); };
+  }, [showFlashModal, canStartFlash, appMode]);
 
-  useEffect(() => {
-    let interval: any;
-    if (isFlashing) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch('http://127.0.0.1:8760/tms/progress', { mode: 'cors' });
-          const d = await res.json();
-          if (d.progress !== undefined) {
-            setFlashProgress(d.progress);
-            setFlashStatus(d.status || `Gravando: ${d.progress}%`);
-            if (d.log && Array.isArray(d.log)) setFlashLog(d.log);
-            if (d.progress >= 100) {
-              setFlashStatus("GRAVAÇÃO CONCLUÍDA COM SUCESSO!");
-              clearInterval(interval);
-              setIsFlashing(false);
-            }
-            if (d.error) {
-              setFlashStatus("ERRO: " + d.error);
-              clearInterval(interval);
-              setIsFlashing(false);
-            }
-          }
-        } catch (e) {
-          setFlashStatus("Conectando ao Bridge Local...");
-        }
-      }, 800);
-    }
-    return () => clearInterval(interval);
-  }, [isFlashing]);
+
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -793,39 +827,51 @@ export default function App() {
 
   // O caminho da pasta agora é gerenciado globalmente pelo bridgePaths no heartbeat
 
-  const handleFlash = (type: string) => {
-    setIsFlashing(true);
-    setFlashProgress(0);
-    setFlashLog([]);
-    setFlashStatus('Iniciando Bridge Python...');
-
-    const product = appMode; // 'tps' ou 'scr'
-    const url = `http://127.0.0.1:8760/tms/flash?type=${type}&product=${product}`;
-
-    fetch(url)
-      .then(res => {
-        if (!res.ok) throw new Error();
-      })
-      .catch(() => {
-        const espIP = window.location.hostname || "192.168.4.1";
-        window.location.href = `teksea://tms/${type}/${product}`;
-      });
-  };
+  const handleFlash = (type: string) => { void startFlash(appMode, type); };
 
   const setupFlashPaths = () => {
     window.location.href = `teksea://tms/setup/${appMode}`;
   };
 
-  const syncSerialNumber = () => {
-    if (!connected) return;
-    let val = parseInt(snInput);
-    if (isNaN(val)) return;
-    // 1. Grava na CPU (Reg 128)
-    send({ command: "write_reg", reg: 128, format: 4, value: val });
-    // 2. Grava na UGE (Reg 129) com delay maior de 500ms para garantir o salvamento
-    setTimeout(() => send({ command: "write_reg", reg: 129, format: 4, value: val }), 500);
-    // 3. Incrementa o valor para o próximo item do lote em vez de limpar
-    setSnInput((val + 1).toString());
+  const [serialMessage, setSerialMessage] = useState('');
+  const [serialPending, setSerialPending] = useState(false);
+  const serialRequest = useRef<{ id: string; value: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  useEffect(() => () => { if (serialRequest.current) clearTimeout(serialRequest.current.timer); }, []);
+  useEffect(() => {
+    const pending = serialRequest.current;
+    const result = data.serial;
+    if (!pending || !result || result.request_id !== pending.id || result.busy) return;
+    clearTimeout(pending.timer);
+    serialRequest.current = null;
+    setSerialPending(false);
+    setSerialMessage(result.message || 'Operação encerrada.');
+    if (result.success && result.cpu_ok && result.uge_ok && result.value === pending.value) {
+      setSnInput(pending.value < 4294967295 ? String(pending.value + 1) : '');
+    }
+  }, [data.serial]);
+  const syncSerialNumber = async () => {
+    const value = Number(snInput);
+    if (!connected || !data.uge_ok || serialRequest.current || data.serial?.busy) return;
+    if (!snInput || !Number.isInteger(value) || value < 0 || value > 4294967295) {
+      setSerialMessage('Informe um inteiro de 0 a 4294967295.');
+      return;
+    }
+    const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    const timer = setTimeout(() => {
+      if (serialRequest.current?.id !== id) return;
+      serialRequest.current = null;
+      setSerialPending(false);
+      setSerialMessage('Sem resultado final. Confira CPU e UGE antes de repetir; número não incrementado.');
+    }, 10000);
+    serialRequest.current = { id, value, timer };
+    setSerialPending(true);
+    setSerialMessage('Aguardando confirmação da CPU e da UGE...');
+    try { await request({ command: 'sync_serial', request_id: id, value }); }
+    catch (error) {
+      // Uma resposta perdida não significa que a escrita foi recusada.
+      if (serialRequest.current?.id === id)
+        setSerialMessage(error instanceof Error ? error.message : 'Sem confirmação inicial.');
+    }
   };
 
   const sendReboot = (code: number) => {
@@ -873,8 +919,6 @@ export default function App() {
 
   return (
     <>
-      {/* Wake-up silencioso do Teksea Bridge ao abrir a pagina */}
-      <iframe src="teksea://start" style={{ display: 'none' }} title="bridge-wakeup" />
       <style>{`
         @keyframes scan-move {
           0%   { left: -4%; }
@@ -895,10 +939,10 @@ export default function App() {
       {showLoteModal && <LoteModal onClose={handleCloseLoteModal} ugeVers={data.uge_vers} appMode={appMode} scrSubMode={scrSubMode} />}
 
       {appMode === 'selection' ? (
-        <SelectionScreen onSelect={handleSelectMode} onOpenWifi={() => setShowWifiModal(true)} />
+        <SelectionScreen onSelect={handleSelectMode} onOpenWifi={() => setShowWifiModal(true)} systemTime={systemTime} />
       ) : (
         <div className="h-screen bg-slate-950 flex flex-col font-sans text-slate-200 overflow-hidden">
-          <header className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex justify-between items-center shadow-md z-10">
+          <header className="relative bg-slate-900 border-b border-slate-800 px-4 py-2 flex justify-between items-center shadow-md z-10">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 {appMode === 'tps' ? (
@@ -938,16 +982,48 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-4">
+
+            <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-slate-800/70 border border-slate-700 rounded-full text-slate-200 shadow-inner absolute left-1/2 -translate-x-1/2">
+              <Clock size={14} className="text-blue-400" />
+              <span className="text-sm font-mono font-bold tracking-wider">{systemTime}</span>
+            </div>
+
+            <div className="flex items-center gap-3">
               <div className={`px-3 py-1 rounded-full text-xs font-bold border ${connected ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>
                 REDE: {connected ? 'OK' : 'OFF'}
               </div>
               <div className={`px-3 py-1 rounded-full text-xs font-bold border ${data.uge_ok ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>
                 UGE: {data.uge_ok ? 'LINK OK' : 'OFF'}
               </div>
-              <div className={`px-3 py-1 rounded-full text-xs font-bold border ${bridgeAlive ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>
-                BRIDGE: {bridgeAlive ? 'OK' : 'OFF'}
-              </div>
+              {bridgeAlive ? (
+                <div className="px-3 py-1 rounded-full text-xs font-bold border bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                  BRIDGE: OK
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={triggerBridgeStart}
+                    title="Clique para tentar iniciar o TEKSEA Bridge"
+                    className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors ${
+                      bridgeStarting
+                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 animate-pulse'
+                        : 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30'
+                    }`}
+                  >
+                    BRIDGE: {bridgeStarting ? 'INICIANDO...' : 'OFF'}
+                  </button>
+                  {bridgeInstallNeeded && (
+                    <a
+                      href="/instalar_bridge.bat"
+                      download="instalar_bridge.bat"
+                      title="O Bridge não respondeu. Clique para baixar o instalador."
+                      className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-600 hover:bg-blue-500 text-white border border-blue-400/50 flex items-center gap-1 shadow transition-colors"
+                    >
+                      <Download size={12} /> INSTALAR BRIDGE
+                    </a>
+                  )}
+                </div>
+              )}
               <div className={`px-3 py-1 rounded-full text-xs font-bold border ${cloudUser ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>
                 NUVEM: {cloudUser ? cloudUser.toUpperCase() : 'OFF'}
               </div>
@@ -1180,12 +1256,12 @@ export default function App() {
                   <div className="flex items-center gap-2 flex-1">
                     <label className="text-xs font-bold text-slate-400">NS:</label>
                     <input
-                      type="text" value={snInput} onChange={e => setSnInput(e.target.value.replace(/[^0-9]/g, ''))}
-                      maxLength={6} placeholder="000000" disabled={isOff}
+                      type="text" value={snInput} disabled={isOff || serialPending || data.serial?.busy} onChange={e => setSnInput(e.target.value.replace(/[^0-9]/g, ''))}
+                      maxLength={10} placeholder="000000"
                       className="w-24 px-2 py-1 text-sm font-mono bg-slate-900 border border-slate-600 rounded text-slate-200 focus:ring-1 focus:ring-blue-500 outline-none"
                     />
                     <button
-                      onClick={syncSerialNumber} disabled={isOff}
+                      onClick={syncSerialNumber} disabled={isOff || serialPending || data.serial?.busy}
                       className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold rounded transition-colors disabled:opacity-50"
                     >
                       GRAVAR
@@ -1195,6 +1271,7 @@ export default function App() {
                     <div className="flex justify-between text-xs gap-4">
                       <span className="font-bold text-slate-500">SN CPU:</span>
                       <span className="font-mono font-bold text-orange-400">{sn(data.sncc)}</span>
+                      <span role="status" className="text-xs text-amber-300">{serialMessage}</span>
                     </div>
                     <div className="flex justify-between text-xs gap-4">
                       <span className="font-bold text-slate-500">SN UGE:</span>
@@ -1241,32 +1318,18 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 
-          <div className="bg-slate-800 rounded-lg shadow-lg border border-slate-700 p-3">
-            <h2 className="text-[10px] font-bold text-slate-400 border-b border-slate-700 pb-1 mb-2 uppercase">Sistema</h2>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-500 font-bold">UPTIME:</span>
-              <span className="font-mono text-slate-300">{isOff || data.upt === undefined ? "---" : data.upt}</span>
-            </div>
-            <div className="flex justify-between text-xs mb-3">
-              <span className="text-slate-500 font-bold">CICLOS:</span>
-              <span className="font-mono text-slate-300">{isOff || data.cyc === undefined ? "---" : data.cyc}</span>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <button onClick={() => send({command: "set_flag", name: "telemetry", value: data.tele ? 0 : 1})} disabled={isOff} className={`py-1 text-[10px] font-bold rounded border transition-colors ${data.tele ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/50' : 'bg-slate-700 text-slate-400 border-slate-600'}`}>TELEMETRIA</button>
-              <button onClick={() => send({command: "set_flag", name: "can_debug", value: data.can_d ? 0 : 1})} disabled={isOff} className={`py-1 text-[10px] font-bold rounded border transition-colors ${data.can_d ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/50' : 'bg-slate-700 text-slate-400 border-slate-600'}`}>DEBUG CAN</button>
-              <button onClick={() => send({command: "set_flag", name: "ignore_adv", value: data.ign_a ? 0 : 1})} disabled={isOff} className={`py-1 text-[10px] font-bold rounded border transition-colors ${data.ign_a ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/50' : 'bg-slate-700 text-slate-400 border-slate-600'}`}>IGNORAR ADVERTÊNCIAS</button>
-            </div>
-          </div>
-          */}
+              <div className="bg-slate-800 rounded-lg shadow-lg border border-slate-700 p-3 flex flex-col">
+                <h2 className="text-[10px] font-bold text-slate-400 border-b border-slate-700 pb-1 mb-2 uppercase">Temperatura da Bateria</h2>
+                <div className="flex-1 flex items-center justify-center py-4">
+                  <span className="text-5xl font-mono font-bold text-orange-400 tracking-wider">
+                    {isOff || data.tbat === -32768 || data.tbat === undefined ? '----' : (data.tbat / 10).toFixed(1) + ' °C'}
+                  </span>
+                </div>
+              </div>
             </div>
           </main>
 
-          <footer className="bg-slate-900 border-t border-slate-800 px-4 py-2 flex flex-wrap justify-between items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.3)] gap-2 z-10">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-500 font-bold">BATERIA:</span>
-              <span className="text-base font-mono font-bold text-orange-400">{isOff || data.tbat === -32768 || data.tbat === undefined ? '----' : (data.tbat / 10).toFixed(1) + ' °C'}</span>
-            </div>
+          <footer className="bg-slate-900 border-t border-slate-800 px-4 py-2 flex flex-wrap justify-end items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.3)] gap-2 z-10">
             <div className="flex flex-wrap items-center gap-2">
               <button onClick={calibrateAll} disabled={isOff} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold rounded shadow transition-colors flex items-center gap-1.5 disabled:opacity-50">
                 <CheckCircle2 size={14} /> CALIBRAR TUDO <span className="opacity-70">(F2)</span>
@@ -1274,7 +1337,15 @@ export default function App() {
               <button onClick={autoAdjustAll} disabled={isOff} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-[10px] font-bold rounded shadow border border-slate-600 transition-colors flex items-center gap-1.5 disabled:opacity-50">
                 <RefreshCw size={14} /> OFFSETS AUTO <span className="opacity-70">(F4)</span>
               </button>
-              <button onClick={() => send({ command: "start_test" })} disabled={isOff} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-[10px] font-bold rounded shadow border border-slate-600 transition-colors disabled:opacity-50">
+              <button
+                onClick={() => { void request({ command: data.relay?.active || data.relay?.stopping ? 'cancel_test' : 'start_test' }).catch(error => window.alert(error.message)); }}
+                disabled={!connected || (isOff && !data.relay?.active && !data.relay?.stopping)}
+                className={`px-3 py-1.5 text-[10px] font-bold rounded shadow border transition-colors disabled:opacity-50 ${
+                  data.relay?.active || data.relay?.stopping
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'
+                    : 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-slate-600'
+                }`}
+              >
                 TESTAR RELÉS
               </button>
               {appMode === 'scr' && (
@@ -1420,7 +1491,7 @@ export default function App() {
                   { id: 'cliente', title: 'CLIENTE', desc: 'C0_Cliente', color: 'hover:border-blue-500 hover:bg-blue-500/10', available: fwAvailable.cliente },
                 ]).map(opt => (
                   <button
-                    key={opt.id} onClick={() => handleFlash(opt.id)} disabled={isFlashing || !opt.available}
+                    key={opt.id} onClick={() => handleFlash(opt.id)} disabled={!canStartFlash || !opt.available}
                     className={`flex flex-col items-center justify-center p-4 rounded-lg border-2 border-slate-700 bg-slate-900/50 transition-all ${opt.color} disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:bg-slate-900/50`}
                   >
                     <span className="font-bold text-[10px] text-slate-200 mb-1">{opt.title}</span>
@@ -1429,9 +1500,25 @@ export default function App() {
                 ))}
               </div>
 
-              {isFlashing && (
+              {(flashOperation.state !== 'idle' || flashNotice) && (
                 <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700">
-                  <div className="text-xs font-bold text-slate-300 mb-2">{flashStatus}</div>
+                  <div role="status" className="text-xs font-bold text-slate-300 mb-2">{flashStatus}</div>
+                  {flashNotice && <p role="status" className="text-xs text-amber-300 mb-2">{flashNotice}</p>}
+                  {flashOperation.state === 'unknown' && (
+                    <div className="flex flex-wrap items-center gap-4 mb-3">
+                      <button onClick={openBridge} disabled={openingBridge} className="text-xs text-blue-300 underline disabled:opacity-50">
+                        {openingBridge ? 'AGUARDANDO A PONTE...' : 'ABRIR TEKSEA BRIDGE'}
+                      </button>
+                      <a
+                        href="/instalar_bridge.bat"
+                        download="instalar_bridge.bat"
+                        className="text-xs text-emerald-400 hover:text-emerald-300 underline flex items-center gap-1"
+                      >
+                        <Download size={12} /> BAIXAR INSTALADOR DO BRIDGE
+                      </a>
+                    </div>
+                  )}
+                  {!flashOperation.cleanup_confirmed && !isFlashing && <p className="text-xs text-amber-300 mb-2">Nova gravação bloqueada até confirmar que o gravador está livre. Fechar a tela não cancela o processo.</p>}
                   <div className="h-3 bg-slate-800 rounded-full overflow-hidden mb-4">
                     <div
                       className="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-300"
@@ -1446,12 +1533,17 @@ export default function App() {
             </div>
             <div className="bg-slate-900 px-6 py-4 flex justify-between items-center border-t border-slate-700">
               <button onClick={setupFlashPaths} disabled={isFlashing} className="text-xs text-blue-400 hover:text-blue-300 underline font-medium disabled:opacity-50 tracking-tight">⚙ CONFIGURAR PASTAS</button>
+              {isFlashing && flashOperation.state !== 'cancelling' && (
+                <button className="px-3 py-2 text-sm font-bold text-red-300" onClick={() => {
+                  if (window.confirm('Interromper a gravação? Pode ser necessário regravar o equipamento.')) void cancelFlash();
+                }}>CANCELAR GRAVAÇÃO</button>
+              )}
               <button 
                 onClick={() => setShowFlashModal(false)} 
                 disabled={isFlashing} 
                 className={`px-4 py-2 rounded shadow-sm text-sm font-bold transition-all ${isFlashing ? 'bg-slate-800 border-slate-600 text-slate-500 opacity-50' : flashProgress >= 100 ? 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 shadow-lg shadow-emerald-900/20' : 'bg-slate-800 border border-slate-600 text-slate-300 hover:bg-slate-700'}`}
               >
-                {flashProgress >= 100 ? 'CONCLUÍDO' : 'CANCELAR'}
+                {flashOperation.state === 'succeeded' ? 'CONCLUÍDO' : 'FECHAR'}
               </button>
             </div>
           </div>
@@ -1586,7 +1678,8 @@ export default function App() {
             
             <div className="bg-slate-900 px-6 py-4 flex justify-end gap-3 border-t border-slate-700">
               <button onClick={() => setShowWifiModal(false)} className="px-4 py-2 text-sm font-bold text-slate-400 hover:text-slate-200 transition-colors">CANCELAR</button>
-              <button onClick={saveWifi} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-blue-900/20 transition-all">SALVAR E REINICIAR</button>
+              <span role="status" className="text-xs text-amber-300 mr-3">{wifiMessage}</span>
+              <button onClick={saveWifi} disabled={wifiSaving || !connected} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-blue-900/20 transition-all">{wifiSaving ? 'SALVANDO...' : 'SALVAR CONFIGURAÇÃO'}</button>
             </div>
           </div>
         </div>

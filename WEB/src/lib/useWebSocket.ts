@@ -8,46 +8,92 @@ export function useWebSocket(url: string) {
   const wsRef = useRef<WebSocket | null>(null);
   const lastPulseRef = useRef<number>(Date.now());
 
-  const connect = useCallback(() => {
-    try {
-      const ws = new WebSocket(url);
-      
+  const pending = useRef(new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>());
+  useEffect(() => {
+    let disposed = false;
+    let reconnect: ReturnType<typeof setTimeout>;
+    const connect = () => {
+      if (disposed) return;
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); }
+      catch {
+        setConnected(false);
+        setData({});
+        reconnect = setTimeout(connect, 5000);
+        return;
+      }
+      wsRef.current = ws;
       ws.onopen = () => {
+        if (disposed) { ws.close(); return; }
         setConnected(true);
         setUseMock(false);
         lastPulseRef.current = Date.now();
       };
-      
-      ws.onmessage = (e) => {
+      ws.onmessage = e => {
+        if (disposed) return;
         lastPulseRef.current = Date.now();
         try {
           const parsed = JSON.parse(e.data);
+          if (parsed.type === 'command_result' && parsed.request_id) {
+            const waiter = pending.current.get(parsed.request_id);
+            if (waiter) {
+              clearTimeout(waiter.timer);
+              pending.current.delete(parsed.request_id);
+              if (parsed.success) waiter.resolve(parsed);
+              else waiter.reject(new Error(parsed.message || 'Comando rejeitado.'));
+            }
+          }
           setData((prev: any) => ({ ...prev, ...parsed }));
-        } catch (err) {
-          console.error("Error parsing WS message", err);
-        }
+        } catch (error) { console.error('Resposta WebSocket inválida', error); }
       };
-      
+      ws.onerror = () => ws.close();
       ws.onclose = () => {
+        for (const waiter of pending.current.values()) {
+          clearTimeout(waiter.timer);
+          waiter.reject(new Error('Conexão encerrada; resultado do comando não confirmado.'));
+        }
+        pending.current.clear();
+        if (disposed) return;
         setConnected(false);
+        setData({});
         if (isLocalhost) setUseMock(true);
-        setTimeout(connect, 5000);
+        reconnect = setTimeout(connect, 5000);
       };
-      
-      wsRef.current = ws;
-    } catch (e) {
-      if (isLocalhost) setUseMock(true);
-    }
-  }, [url]);
-
-  useEffect(() => {
+    };
     connect();
     return () => {
+      disposed = true;
+      clearTimeout(reconnect);
       if (wsRef.current) {
+        wsRef.current.onclose = null;
         wsRef.current.close();
       }
+      for (const waiter of pending.current.values()) {
+        clearTimeout(waiter.timer);
+        waiter.reject(new Error('Conexão encerrada; resultado não confirmado.'));
+      }
+      pending.current.clear();
     };
-  }, [connect]);
+  }, [url, isLocalhost]);
+
+  const request = useCallback((msg: any, timeout = 5000): Promise<any> => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Sem conexão real com o ESP32.'));
+    const request_id = msg.request_id || Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.current.delete(request_id);
+        reject(new Error('Sem confirmação do comando. Confira o equipamento antes de repetir.'));
+      }, timeout);
+      pending.current.set(request_id, { resolve, reject, timer });
+      try { ws.send(JSON.stringify({ ...msg, request_id })); }
+      catch (error) {
+        clearTimeout(timer);
+        pending.current.delete(request_id);
+        reject(error);
+      }
+    });
+  }, []);
 
   // Watchdog
   useEffect(() => {
@@ -109,5 +155,5 @@ export function useWebSocket(url: string) {
     }
   }, [useMock]);
 
-  return { data, connected, send };
+  return { data, connected, send, request, isMock: useMock };
 }

@@ -80,6 +80,6 @@ bool can_protocol_transmit_req_read(uint16_t reg_number, uint8_t formato,
  * @return True se enviado ao barramento TWAI, False se a fila encheu ou formato inválido
  */
 bool can_protocol_transmit_req_write(uint16_t reg_number, uint8_t formato,
-                                      float value);
+                                      double value);
 
 #endif // CAN_PROTOCOL_H

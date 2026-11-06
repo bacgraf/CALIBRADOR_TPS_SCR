@@ -1,14 +1,13 @@
 @echo off
-setlocal enabledelayedexpansion
-
-:: Forçar codificação UTF-8 para acentos
-chcp 65001 > nul
+setlocal enableextensions
 
 :: ============================================================================
-:: CONFIGURAÇÕES
+:: CONFIGURACOES
 :: ============================================================================
-set PIO_PATH=C:\Users\marcel.hilleshein\.platformio\penv\Scripts\platformio.exe
-set PROJECT_DIR=%~dp0
+if not defined PIO_PATH set "PIO_PATH=%USERPROFILE%\.platformio\penv\Scripts\platformio.exe"
+pushd "%~dp0"
+if errorlevel 1 exit /b 1
+set "PROJECT_DIR=%CD%\"
 
 :MENU
 cls
@@ -22,7 +21,9 @@ echo   [1] COMPLETO (Build Web + Firmware + Filesystem)
 echo   [2] APENAS WEB (Build Web + Filesystem)
 echo   [3] APENAS FIRMWARE (C++)
 echo   [4] APENAS FILESYSTEM (Sem build, apenas upload)
-echo   [5] Sair
+echo   [5] APAGAR FLASH COMPLETA (Erase total + NVS/Wi-Fi)
+echo   [6] APAGAR FLASH + GRAVAR TUDO (Erase + Web + Firmware + Filesystem)
+echo   [7] Sair
 echo.
 echo ------------------------------------------------------------------------------
 set /p opt=Opcao: 
@@ -31,13 +32,16 @@ if "%opt%"=="1" goto ALL
 if "%opt%"=="2" goto WEB_ONLY
 if "%opt%"=="3" goto FW_ONLY
 if "%opt%"=="4" goto FS_ONLY
-if "%opt%"=="5" exit /b 0
+if "%opt%"=="5" goto ERASE_ONLY
+if "%opt%"=="6" goto ERASE_AND_ALL
+if "%opt%"=="7" goto QUIT
 goto MENU
 
 :ALL
 call :BUILD_WEB
 if errorlevel 1 goto END
 call :COPY_DATA
+if errorlevel 1 goto END
 call :UPLOAD_FW
 if errorlevel 1 goto END
 call :UPLOAD_FS
@@ -47,6 +51,7 @@ goto END
 call :BUILD_WEB
 if errorlevel 1 goto END
 call :COPY_DATA
+if errorlevel 1 goto END
 call :UPLOAD_FS
 goto END
 
@@ -55,7 +60,24 @@ call :UPLOAD_FW
 goto END
 
 :FS_ONLY
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%prepare_web_data.ps1" -ProjectRoot "%PROJECT_DIR%." -UseExistingData
+if errorlevel 1 goto END
+call :UPLOAD_FS
+goto END
+
+:ERASE_ONLY
+call :ERASE_FLASH
+goto END
+
+:ERASE_AND_ALL
+call :BUILD_WEB
+if errorlevel 1 goto END
 call :COPY_DATA
+if errorlevel 1 goto END
+call :ERASE_FLASH
+if errorlevel 1 goto END
+call :UPLOAD_FW
+if errorlevel 1 goto END
 call :UPLOAD_FS
 goto END
 
@@ -63,10 +85,36 @@ goto END
 :: SUBROTINAS (Acoes isoladas)
 :: ============================================================================
 
+:ERASE_FLASH
+echo.
+echo === [PASSO] Apagando TODA a memoria Flash do ESP32 (incluindo NVS / Wi-Fi)...
+call :RUN_PIO run -t erase
+if errorlevel 1 (
+    echo [ERRO] Falha ao apagar a memoria Flash.
+    exit /b 1
+)
+exit /b 0
+
 :BUILD_WEB
 echo.
 echo === [PASSO] Compilando interface React (Vite)...
 cd /d "%PROJECT_DIR%WEB"
+if errorlevel 1 exit /b 1
+if not exist "node_modules\@types\jsdom" (
+    echo === [PASSO] Instalando dependencias da interface Web...
+    call npm install
+    if errorlevel 1 (
+        echo [ERRO] Falha ao instalar dependencias do Node.
+        cd /d "%PROJECT_DIR%"
+        exit /b 1
+    )
+)
+call npm run lint
+if errorlevel 1 (
+    echo [ERRO] Falha na verificacao de tipos do React.
+    cd /d "%PROJECT_DIR%"
+    exit /b 1
+)
 call npm run build
 if errorlevel 1 (
     echo [ERRO] Falha no build do React.
@@ -79,16 +127,13 @@ exit /b 0
 :COPY_DATA
 echo.
 echo === [PASSO] Sincronizando pasta 'data'...
-if exist data rd /s /q data
-mkdir data
-xcopy /s /y WEB\dist\* data\ > nul
-echo [OK] Pasta data preparada.
-exit /b 0
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%prepare_web_data.ps1" -ProjectRoot "%PROJECT_DIR%."
+exit /b %errorlevel%
 
 :UPLOAD_FW
 echo.
 echo === [PASSO] Gravando FIRMWARE (ESP32)...
-"%PIO_PATH%" run -t upload
+call :RUN_PIO run -t upload
 if errorlevel 1 (
     echo [ERRO] Falha no upload do firmware.
     exit /b 1
@@ -96,16 +141,37 @@ if errorlevel 1 (
 exit /b 0
 
 :UPLOAD_FS
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%prepare_web_data.ps1" -ProjectRoot "%PROJECT_DIR%." -UseExistingData
+if errorlevel 1 exit /b 1
 echo.
 echo === [PASSO] Gravando FILESYSTEM (SPIFFS)...
-"%PIO_PATH%" run -t uploadfs
+call :RUN_PIO run -t uploadfs
 if errorlevel 1 (
     echo [ERRO] Falha no upload de arquivos.
     exit /b 1
 )
 exit /b 0
 
+:RUN_PIO
+cd /d "%PROJECT_DIR%"
+if errorlevel 1 exit /b 1
+"%PIO_PATH%" --version >nul 2>nul
+if not errorlevel 1 (
+    "%PIO_PATH%" %*
+    exit /b
+)
+:: Compatibilidade com ambiente movido de computador: usa o Python disponivel
+:: e os pacotes do PlatformIO existente, sem alterar configuracao global.
+set "PYTHONPATH=%USERPROFILE%\.platformio\penv\Lib\site-packages;%PYTHONPATH%"
+python -m platformio %*
+exit /b %errorlevel%
+
+:QUIT
+popd
+exit /b 0
+
 :END
+cd /d "%PROJECT_DIR%"
 echo.
 echo ==============================================================================
 echo           OPERACAO FINALIZADA

@@ -1,6 +1,8 @@
 #include "ihm_state.h"
 #include "esp_log.h"
 #include "uge_datamap.h"
+#include "settings_validation.h"
+#include <string.h>
 
 // Define a instância global do estado da IHM e os valores iniciais da Flag
 ihm_state_t g_ihm_state = {.flags = {.ignore_advertise = true,
@@ -218,31 +220,63 @@ void ihm_state_update_register(uint16_t reg, int32_t raw_value) {
 #include "nvs.h"
 #include "nvs_flash.h"
 
-void ihm_state_save_to_nvs(void) {
-  nvs_handle_t my_handle;
-  esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
-  if (err == ESP_OK) {
-    nvs_set_blob(my_handle, "settings", &g_ihm_state.settings,
-                 sizeof(ihm_settings_t));
-    nvs_commit(my_handle);
-    nvs_close(my_handle);
-    ESP_LOGI("IHM_STATE", "Configurações salvas no NVS");
-  }
+bool ihm_settings_valid(const ihm_settings_t *settings) {
+  if (!memchr(settings->wifi_ssid, 0, sizeof(settings->wifi_ssid)) ||
+      !memchr(settings->wifi_pass, 0, sizeof(settings->wifi_pass)) ||
+      !memchr(settings->static_ip, 0, sizeof(settings->static_ip)) ||
+      !memchr(settings->static_gw, 0, sizeof(settings->static_gw)) ||
+      !memchr(settings->static_mask, 0, sizeof(settings->static_mask))) return false;
+  if (settings->dhcp_enabled > 1 || settings->ap_enabled > 1 ||
+      !settings_password_valid(settings->wifi_pass)) return false;
+  return settings->dhcp_enabled || settings_network_valid(settings->static_ip, settings->static_gw, settings->static_mask);
+}
+
+esp_err_t ihm_state_save_to_nvs(const ihm_settings_t *settings) {
+  if (!ihm_settings_valid(settings)) return ESP_ERR_INVALID_ARG;
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open("storage", NVS_READWRITE, &handle);
+  if (err != ESP_OK) return err;
+  // Nome da chave identifica a versão da estrutura, incluindo terminadores extras.
+  err = nvs_set_blob(handle, "settings_v2", settings, sizeof(*settings));
+  if (err == ESP_OK) err = nvs_commit(handle);
+  nvs_close(handle);
+  if (err == ESP_OK) g_ihm_state.settings = *settings;
+  return err;
 }
 
 void ihm_state_load_from_nvs(void) {
-  nvs_handle_t my_handle;
-  esp_err_t err = nvs_open("storage", NVS_READONLY, &my_handle);
-  if (err == ESP_OK) {
-    size_t required_size = sizeof(ihm_settings_t);
-    err = nvs_get_blob(my_handle, "settings", &g_ihm_state.settings,
-                       &required_size);
-    nvs_close(my_handle);
-    if (err == ESP_OK) {
-      ESP_LOGI("IHM_STATE", "Configurações carregadas do NVS");
-    } else {
-      ESP_LOGW("IHM_STATE",
-               "Nenhuma configuração encontrada no NVS, usando padrão");
+  nvs_handle_t handle;
+  if (nvs_open("storage", NVS_READONLY, &handle) != ESP_OK) return;
+  ihm_settings_t candidate = {0};
+  size_t size = sizeof(candidate);
+  esp_err_t err = nvs_get_blob(handle, "settings_v2", &candidate, &size);
+  bool migrated = false;
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    struct {
+      char ssid[32], pass[64], ip[16], gw[16], mask[16];
+      uint16_t dhcp, ap;
+    } legacy;
+    size = sizeof(legacy);
+    err = nvs_get_blob(handle, "settings", &legacy, &size);
+    if (err == ESP_OK && size == sizeof(legacy)) {
+      memcpy(candidate.wifi_ssid, legacy.ssid, 32);
+      memcpy(candidate.wifi_pass, legacy.pass, 64);
+      memcpy(candidate.static_ip, legacy.ip, 16);
+      memcpy(candidate.static_gw, legacy.gw, 16);
+      memcpy(candidate.static_mask, legacy.mask, 16);
+      candidate.dhcp_enabled = legacy.dhcp;
+      candidate.ap_enabled = legacy.ap;
+      migrated = true;
+    } else err = ESP_ERR_INVALID_SIZE;
+  } else if (err == ESP_OK && size != sizeof(candidate)) err = ESP_ERR_INVALID_SIZE;
+  nvs_close(handle);
+  if (err == ESP_OK && ihm_settings_valid(&candidate)) {
+    g_ihm_state.settings = candidate;
+    if (migrated) {
+      esp_err_t saved = ihm_state_save_to_nvs(&candidate);
+      if (saved != ESP_OK) ESP_LOGW("IHM_STATE", "Migração NVS não persistida: %s", esp_err_to_name(saved));
     }
+  } else {
+    ESP_LOGW("IHM_STATE", "Configuração NVS ausente/inválida; mantendo padrão.");
   }
 }
