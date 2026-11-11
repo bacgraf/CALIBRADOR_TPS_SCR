@@ -65,8 +65,8 @@ const CircularGauge = ({ value, max, unit, isBad, isOff, formattedValue }: any) 
 
 const SensorBlock = ({
   title, measureRaw, measureDivisor, unit, isOff, refValue, openLimit, openThreshold,
-  onCalibrate, offsetRaw, onApplyOffset, onAutoOffset, gainRaw, onApplyGain, maxValue,
-  precision = 2
+  onCalibrate, offsetRaw, offsetDivisor = 100, offsetPrecision = 2, onApplyOffset, onAutoOffset, gainRaw, onApplyGain, maxValue,
+  precision = 2, hideGauge = false, diode
 }: any) => {
   const [offsetInput, setOffsetInput] = useState('');
   const [gainInput, setGainInput] = useState('');
@@ -80,30 +80,64 @@ const SensorBlock = ({
     ? `---` : numericMeasure.toFixed(precision);
 
   const isBad = checkHealth(measureRaw, measureDivisor, refValue, openLimit, openThreshold, isOff);
+  const showDiodeHint = Boolean(diode && isBad && Math.abs(numericMeasure) > openLimit);
   const offsetFormatted = isOff || offsetRaw === undefined || offsetRaw <= -32768
-    ? "---" : (offsetRaw / 100).toFixed(2);
+    ? "---" : (offsetRaw / offsetDivisor).toFixed(offsetPrecision);
   const gainFormatted = isOff || gainRaw === undefined || gainRaw <= -32700
     ? "---%" : (gainRaw / 100 >= 0 ? "+" : "") + (gainRaw / 100).toFixed(2) + "%";
 
   return (
     <div className="p-2 border-b border-slate-700 last:border-0 flex flex-col">
-      <h3 className="text-xs font-semibold text-slate-300 mb-2 text-center">{title}</h3>
+      {hideGauge ? (
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center gap-1.5">
+            {title && <span className="text-xs font-semibold text-slate-300">{title}:</span>}
+            <span className={`text-sm font-mono font-bold ${isOff ? 'text-slate-500' : isBad ? 'text-red-400' : 'text-emerald-400'}`}>
+              {measureFormatted}{unit}
+            </span>
+            {showDiodeHint && (
+              <span className="px-1.5 py-0.5 text-[9px] font-mono font-bold bg-red-500/20 text-red-400 border border-red-500/40 rounded">
+                Verificar {diode}
+              </span>
+            )}
+          </div>
+          {onCalibrate && (
+            <button
+              onClick={onCalibrate} disabled={isOff}
+              className="px-2.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              CALIBRAR
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <h3 className="text-xs font-semibold text-slate-300 mb-2 text-center">{title}</h3>
 
-      <CircularGauge
-        value={numericMeasure}
-        max={dynamicMax}
-        unit={unit}
-        isBad={isBad}
-        isOff={isOff || measureRaw === undefined || measureRaw <= -32700}
-        formattedValue={measureFormatted}
-      />
+          <CircularGauge
+            value={numericMeasure}
+            max={dynamicMax}
+            unit={unit}
+            isBad={isBad}
+            isOff={isOff || measureRaw === undefined || measureRaw <= -32700}
+            formattedValue={measureFormatted}
+          />
 
-      <button
-        onClick={onCalibrate} disabled={isOff}
-        className="px-3 py-1 mb-2 self-start bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        CALIBRAR
-      </button>
+          <div className="flex items-center justify-between mb-2">
+            <button
+              onClick={onCalibrate} disabled={isOff}
+              className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              CALIBRAR
+            </button>
+            {showDiodeHint && (
+              <span className="px-2 py-0.5 text-[10px] font-mono font-bold bg-red-500/20 text-red-400 border border-red-500/40 rounded animate-pulse" title={`Leitura fora da faixa esperada. Verificar diodo ${diode} na placa CPU.`}>
+                Verificar {diode}
+              </span>
+            )}
+          </div>
+        </>
+      )}
 
       <div className="w-full space-y-1">
         {onApplyOffset && (
@@ -155,9 +189,8 @@ const SelectionScreen = ({ onSelect, onOpenWifi, systemTime }: { onSelect: (mode
       <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 rounded-full blur-[120px]" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/10 rounded-full blur-[120px]" />
 
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-1.5 bg-slate-900/70 border border-slate-700/80 rounded-full text-slate-200 shadow-lg backdrop-blur-md">
-        <Clock size={14} className="text-blue-400" />
-        <span className="text-sm font-mono font-bold tracking-wider">{systemTime}</span>
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 text-slate-100">
+        <span className="text-2xl font-mono font-bold tracking-widest">{systemTime}</span>
       </div>
 
       <div className="absolute top-4 right-4 z-20">
@@ -576,6 +609,7 @@ export default function App() {
   const [refIcc, setRefIcc] = useState('60.00');
   const [refVca, setRefVca] = useState('234.2');
   const [refIca, setRefIca] = useState('250.00');
+  const [refTret, setRefTret] = useState('250.0');
   const [snInput, setSnInput] = useState('');
 
   const [scaType, setScaType] = useState<number>(1);
@@ -698,7 +732,8 @@ export default function App() {
       'vca_t': { reg: 148, g: 'gvt', r: 'vt', d: 10 },
       'ica_r': { reg: 146, g: 'gir', r: 'ir', d: 100 },
       'ica_s': { reg: 149, g: 'gis', r: 'is', d: 100 },
-      'ica_t': { reg: 147, g: 'git', r: 'it', d: 100 }
+      'ica_t': { reg: 147, g: 'git', r: 'it', d: 100 },
+      'tret': { reg: 148, g: 'gvt', r: 'tret', d: 10 }
     };
     const cfg = map[sensor];
     if (!cfg) return;
@@ -723,6 +758,7 @@ export default function App() {
     else if (sensor === 'iret') { reg = 139; val = (data.oi1 || 0) - (data.iret); }
     else if (sensor === 'iret2') { reg = 141; val = (data.oi2 || 0) - (data.iret2); }
     else if (sensor === 'ibat') { reg = 143; val = (data.oib || 0) - (data.ibat); }
+    else if (sensor === 'tret') { reg = 149; val = (data.gis || 0) - (data.tret); }
     if (reg !== undefined) {
       send({ command: "write_reg", reg, format: 2, value: Math.round(val) });
     }
@@ -983,9 +1019,8 @@ export default function App() {
               )}
             </div>
 
-            <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-slate-800/70 border border-slate-700 rounded-full text-slate-200 shadow-inner absolute left-1/2 -translate-x-1/2">
-              <Clock size={14} className="text-blue-400" />
-              <span className="text-sm font-mono font-bold tracking-wider">{systemTime}</span>
+            <div className="hidden lg:flex items-center text-slate-100 absolute left-1/2 -translate-x-1/2">
+              <span className="text-xl font-mono font-bold tracking-widest">{systemTime}</span>
             </div>
 
             <div className="flex items-center gap-3">
@@ -1040,6 +1075,7 @@ export default function App() {
                 <div className="flex-1">
                   <SensorBlock
                     title={appMode === 'tps' ? "Tensão Retificador" : "Tensão Vcc 1"}
+                    diode={appMode === 'scr' ? "INA6 / D3" : undefined}
                     measureRaw={data.vret} measureDivisor={100} unit=" V" maxValue={150}
                     isOff={isOff} refValue={refVcc} openLimit={5} openThreshold={10}
                     onCalibrate={() => calibrateGain('vret', refVcc)}
@@ -1048,7 +1084,7 @@ export default function App() {
                   />
                   {appMode === 'scr' && (
                     <SensorBlock
-                      title="Tensão Vcc 2" measureRaw={data.vbat} measureDivisor={100} unit=" V" maxValue={150}
+                      title="Tensão Vcc 2" diode="INA5 / D13" measureRaw={data.vbat} measureDivisor={100} unit=" V" maxValue={150}
                       isOff={isOff} refValue={refVcc} openLimit={5} openThreshold={10}
                       onCalibrate={() => calibrateGain('vcc2', refVcc)}
                       offsetRaw={data.ov2} onApplyOffset={(val: number) => writeReg(135, 2, val)} onAutoOffset={() => autoAdjust('vcc2')}
@@ -1057,6 +1093,7 @@ export default function App() {
                   )}
                   <SensorBlock
                     title={appMode === 'tps' ? "Tensão Consumidor" : "Tensão Vcc 3"}
+                    diode={appMode === 'scr' ? "INA4 / D11" : undefined}
                     measureRaw={data.vcons} measureDivisor={100} unit=" V" maxValue={150}
                     isOff={isOff} refValue={refVcc} openLimit={5} openThreshold={10}
                     onCalibrate={() => calibrateGain('vcons', refVcc)}
@@ -1083,6 +1120,7 @@ export default function App() {
                 <div className="flex-1">
                   <SensorBlock
                     title={appMode === 'tps' ? "Corrente Retificador" : "Corrente Icc 1"}
+                    diode={appMode === 'scr' ? "INA8 / D2" : undefined}
                     measureRaw={data.iret} measureDivisor={100} unit=" A" maxValue={100}
                     isOff={isOff} refValue={refIcc} openLimit={5} openThreshold={2}
                     onCalibrate={() => calibrateGain('iret', refIcc)}
@@ -1091,7 +1129,7 @@ export default function App() {
                   />
                   {appMode === 'scr' && scrSubMode === '12' && (
                     <SensorBlock
-                      title="Corrente Icc 2" measureRaw={data.iret2} measureDivisor={100} unit=" A" maxValue={100}
+                      title="Corrente Icc 2" diode="INA3 / D9" measureRaw={data.iret2} measureDivisor={100} unit=" A" maxValue={100}
                       isOff={isOff} refValue={refIcc} openLimit={5} openThreshold={2}
                       onCalibrate={() => calibrateGain('iret2', refIcc)}
                       offsetRaw={data.oi2} onApplyOffset={(val: number) => writeReg(141, 2, val)} onAutoOffset={() => autoAdjust('iret2')}
@@ -1100,6 +1138,7 @@ export default function App() {
                   )}
                   <SensorBlock
                     title={appMode === 'tps' ? "Corrente Bateria" : "Corrente Icc 3"}
+                    diode={appMode === 'scr' ? "INA7 / D4" : undefined}
                     measureRaw={data.ibat} measureDivisor={100} unit=" A" maxValue={100}
                     isOff={isOff} refValue={refIcc} openLimit={5} openThreshold={2}
                     onCalibrate={() => calibrateGain('ibat', refIcc)}
@@ -1126,6 +1165,7 @@ export default function App() {
                 <div className="flex-1">
                   <SensorBlock
                     title={appMode === 'tps' ? "Tensão R" : "Tensão RS"}
+                    diode={appMode === 'scr' ? "INA10 / D7" : undefined}
                     measureRaw={data.vrs} measureDivisor={10} unit=" V" maxValue={300}
                     isOff={isOff} refValue={refVca} openLimit={5} openThreshold={10}
                     onCalibrate={() => calibrateGain('vca_rs', refVca)}
@@ -1134,6 +1174,7 @@ export default function App() {
                   />
                   <SensorBlock
                     title={appMode === 'tps' ? "Tensão S" : "Tensão ST"}
+                    diode={appMode === 'scr' ? "INA9 / D6" : undefined}
                     measureRaw={data.vst} measureDivisor={10} unit=" V" maxValue={300}
                     isOff={isOff} refValue={refVca} openLimit={5} openThreshold={10}
                     onCalibrate={() => calibrateGain('vca_st', refVca)}
@@ -1213,7 +1254,7 @@ export default function App() {
                 <div className="bg-slate-900 text-slate-300 text-[10px] font-bold px-3 py-2 uppercase tracking-wider border-b border-slate-700">Correntes CA</div>
                 <div className="flex-1">
                   <SensorBlock
-                    title="Corrente R" measureRaw={data.ir} measureDivisor={100} unit=" A" maxValue={300}
+                    title="Corrente R" diode={appMode === 'scr' ? "INA12 / D12" : undefined} measureRaw={data.ir} measureDivisor={100} unit=" A" maxValue={300}
                     isOff={isOff} refValue={refIca} openLimit={5} openThreshold={2}
                     onCalibrate={() => calibrateGain('ica_r', refIca)}
                     gainRaw={data.gir} onApplyGain={(val: number) => writeReg(146, 5, val)}
@@ -1227,7 +1268,7 @@ export default function App() {
                     />
                   )}
                   <SensorBlock
-                    title="Corrente T" measureRaw={data.it} measureDivisor={100} unit=" A" maxValue={300}
+                    title="Corrente T" diode={appMode === 'scr' ? "INA11 / D10" : undefined} measureRaw={data.it} measureDivisor={100} unit=" A" maxValue={300}
                     isOff={isOff} refValue={refIca} openLimit={5} openThreshold={2}
                     onCalibrate={() => calibrateGain('ica_t', refIca)}
                     gainRaw={data.git} onApplyGain={(val: number) => writeReg(147, 5, val)}
@@ -1319,11 +1360,39 @@ export default function App() {
               </div>
 
               <div className="bg-slate-800 rounded-lg shadow-lg border border-slate-700 p-3 flex flex-col">
-                <h2 className="text-[10px] font-bold text-slate-400 border-b border-slate-700 pb-1 mb-2 uppercase">Temperatura da Bateria</h2>
-                <div className="flex-1 flex items-center justify-center py-4">
-                  <span className="text-5xl font-mono font-bold text-orange-400 tracking-wider">
-                    {isOff || data.tbat === -32768 || data.tbat === undefined ? '----' : (data.tbat / 10).toFixed(1) + ' °C'}
-                  </span>
+                <div className={`flex-1 ${appMode === 'scr' ? 'grid grid-cols-2 divide-x divide-slate-700' : 'flex flex-col'}`}>
+                  <div className={`flex flex-col flex-1 ${appMode === 'scr' ? 'pr-3' : ''}`}>
+                    <h2 className="text-[10px] font-bold text-slate-400 border-b border-slate-700 pb-1 mb-2 uppercase">Temperatura da Bateria</h2>
+                    <div className="flex-1 flex items-center justify-center py-4">
+                      <span className="text-4xl xl:text-5xl font-mono font-bold text-orange-400 tracking-wider">
+                        {isOff || data.tbat <= -32700 || data.tbat === undefined ? '----' : (data.tbat / 10).toFixed(1) + ' °C'}
+                      </span>
+                    </div>
+                  </div>
+                  {appMode === 'scr' && (
+                    <div className="flex flex-col pl-3">
+                      <h2 className="text-[10px] font-bold text-slate-400 border-b border-slate-700 pb-1 mb-1 uppercase">Temperatura Retificador</h2>
+                      <SensorBlock
+                        title="Tret (LM35)"
+                        hideGauge={true}
+                        measureRaw={data.tret} measureDivisor={10} unit=" mV" maxValue={1000} precision={1}
+                        isOff={isOff} refValue={refTret} openLimit={10} openThreshold={20}
+                        offsetRaw={data.gis} offsetDivisor={10} offsetPrecision={1}
+                        onApplyOffset={(val: number) => writeReg(149, 2, val / 10)}
+                        onAutoOffset={() => autoAdjust('tret')}
+                        gainRaw={data.gvt} onApplyGain={(val: number) => writeReg(148, 5, val)}
+                      />
+                      <div className="pt-1.5 border-t border-slate-700 mt-auto flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-bold text-slate-400">Ref (mV):</span>
+                        <input
+                          type="text" inputMode="numeric" value={refTret}
+                          onChange={e => applyMask(e.target.value, 1, setRefTret)}
+                          className="w-20 px-2 py-1 text-xs font-mono bg-slate-900 border border-slate-600 rounded text-slate-200 focus:ring-1 focus:ring-blue-500 outline-none"
+                        />
+                        <button onClick={() => calibrateGain('tret', refTret)} disabled={isOff} className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold rounded transition-colors disabled:opacity-50">CALIBRAR</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

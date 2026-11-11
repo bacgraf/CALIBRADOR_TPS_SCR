@@ -373,6 +373,7 @@ static void send_update(void) {
 
   // CA e Outros (x10 para 1 casa decimal)
   cJSON_AddNumberToObject(root, "tbat", (int)(g_ihm_state.temp_bat_meas * 10));
+  cJSON_AddNumberToObject(root, "tret", (int)lroundf(g_ihm_state.tret_avg * 10));
 
   // CA (x10 e x100)
   cJSON_AddNumberToObject(root, "vrs", (int)(g_ihm_state.vca_rs_rms * 10));
@@ -453,13 +454,13 @@ static void send_update(void) {
 
   // Ganhos CA (x10000)
   cJSON_AddNumberToObject(root, "gvrs",
-                          (int)(g_ihm_state.vca_rs_ganho * 10000));
+                          (int)lroundf(g_ihm_state.vca_rs_ganho * 10000));
   cJSON_AddNumberToObject(root, "gvst",
-                          (int)(g_ihm_state.vca_st_ganho * 10000));
-  cJSON_AddNumberToObject(root, "gvt", (int)(g_ihm_state.vca_t_ganho * 10000));
-  cJSON_AddNumberToObject(root, "gir", (int)(g_ihm_state.ica_r_ganho * 10000));
-  cJSON_AddNumberToObject(root, "gis", (int)(g_ihm_state.ica_s_ganho * 10000));
-  cJSON_AddNumberToObject(root, "git", (int)(g_ihm_state.ica_t_ganho * 10000));
+                          (int)lroundf(g_ihm_state.vca_st_ganho * 10000));
+  cJSON_AddNumberToObject(root, "gvt", (int)lroundf(g_ihm_state.vca_t_ganho * 10000));
+  cJSON_AddNumberToObject(root, "gir", (int)lroundf(g_ihm_state.ica_r_ganho * 10000));
+  cJSON_AddNumberToObject(root, "gis", (int)lroundf(g_ihm_state.ica_s_ganho * 10000));
+  cJSON_AddNumberToObject(root, "git", (int)lroundf(g_ihm_state.ica_t_ganho * 10000));
  
   // Configurações e Status de Rede
   cJSON *net = cJSON_AddObjectToObject(root, "net");

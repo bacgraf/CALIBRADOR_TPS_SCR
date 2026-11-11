@@ -56,7 +56,7 @@ void telemetry_task(void *pvParameter) {
         case 0: can_protocol_transmit_req_read(REG_VRET1_AVG, 2, 4); break;    // 104-107
         case 1: can_protocol_transmit_req_read(REG_IRET2_AVG, 2, 4); break;    // 108-111
         case 2: can_protocol_transmit_req_read(REG_VCA_ST_RMS, 2, 4); break;   // 112-115
-        case 3: can_protocol_transmit_req_read(REG_ICA_T_RMS, 2, 2); break;    // 116-117
+        case 3: can_protocol_transmit_req_read(REG_ICA_T_RMS, 2, 3); break;    // 116-118 (Ica_T_rms, Ica_T_avg, Tret_avg)
         case 4: can_protocol_transmit_req_read(REG_VCA_T_RMS, 2, 1); break;    // 430 (int16)
         case 5: can_protocol_transmit_req_read(REG_ICA_S_RMS, 2, 1); break;    // 432 (int16)
         

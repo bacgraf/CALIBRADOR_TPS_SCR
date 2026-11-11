@@ -121,7 +121,7 @@ void ihm_state_update_register(uint16_t reg, int32_t raw_value) {
     g_ihm_state.ica_s_rms = ((float)raw_value) * 0.01f;
     break;
   case REG_TRET_AVG:
-    // Mapear para Temp do Retificador se necessário, por ora apenas break
+    g_ihm_state.tret_avg = ((float)raw_value) * 0.1f; // x0.1 mV
     break;
   // 5.8 Parâmetros de Calibração
   case REG_SN_CPU:
