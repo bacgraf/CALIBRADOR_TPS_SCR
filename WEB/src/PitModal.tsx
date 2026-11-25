@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   FileSpreadsheet, Upload, AlertTriangle, CheckCircle2, XCircle,
   Cpu, Play, Square, RefreshCw, Info, X, DownloadCloud
@@ -95,6 +95,13 @@ export const PitModal: React.FC<PitModalProps> = ({
   const [writeDone, setWriteDone] = useState<'idle' | 'success' | 'error' | 'cancelled'>('idle');
   const cancelRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const logContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [writeLogs]);
 
   // Estado de leitura da UGE (conferência / inspeção)
   const [reading, setReading] = useState(false);
@@ -469,11 +476,10 @@ export const PitModal: React.FC<PitModalProps> = ({
           )}
 
           {diffStats && (
-            <div className={`p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
-              diffStats.mismatched === 0 && diffStats.missing === 0
+            <div className={`p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${diffStats.mismatched === 0 && diffStats.missing === 0
                 ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
                 : 'bg-amber-500/10 border-amber-500/40 text-amber-200'
-            }`}>
+              }`}>
               <div className="flex items-center gap-2">
                 {diffStats.mismatched === 0 && diffStats.missing === 0 ? (
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -511,13 +517,12 @@ export const PitModal: React.FC<PitModalProps> = ({
                   {pitData.warnings.map((w, idx) => (
                     <div
                       key={idx}
-                      className={`px-3 py-2 rounded-lg text-xs flex items-center gap-2 border ${
-                        w.severity === 'error'
+                      className={`px-3 py-2 rounded-lg text-xs flex items-center gap-2 border ${w.severity === 'error'
                           ? 'bg-red-500/10 border-red-500/40 text-red-300'
                           : w.severity === 'warning'
                             ? 'bg-amber-500/10 border-amber-500/40 text-amber-300'
                             : 'bg-blue-500/10 border-blue-500/30 text-blue-300'
-                      }`}
+                        }`}
                     >
                       {w.severity === 'error' ? (
                         <XCircle className="w-4 h-4 shrink-0" />
@@ -548,11 +553,10 @@ export const PitModal: React.FC<PitModalProps> = ({
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id as any)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                      activeTab === tab.id
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${activeTab === tab.id
                         ? 'bg-blue-600 text-white shadow'
                         : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                    }`}
+                      }`}
                   >
                     {tab.label}
                   </button>
@@ -593,9 +597,8 @@ export const PitModal: React.FC<PitModalProps> = ({
                         return (
                           <div
                             key={f.k}
-                            className={`bg-slate-900 border rounded-lg p-2 ${
-                              hasBoth ? (match ? 'border-emerald-500/40' : 'border-red-500/50') : 'border-slate-800'
-                            }`}
+                            className={`bg-slate-900 border rounded-lg p-2 ${hasBoth ? (match ? 'border-emerald-500/40' : 'border-red-500/50') : 'border-slate-800'
+                              }`}
                           >
                             <div className="flex justify-between text-[10px] text-slate-400 mb-1">
                               <span>{f.label}</span>
@@ -691,16 +694,14 @@ export const PitModal: React.FC<PitModalProps> = ({
                                   key={`${code}-${p.valor}`}
                                   disabled={writing}
                                   onBlur={e => updateParamValue(code, e.target.value)}
-                                  className={`w-24 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none ${
-                                    outOfRange ? 'border-red-500 text-red-300' : 'border-slate-700 text-slate-100'
-                                  }`}
+                                  className={`w-24 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none ${outOfRange ? 'border-red-500 text-red-300' : 'border-slate-700 text-slate-100'
+                                    }`}
                                 />
                               </td>
                             )}
                             {ugeSnap && (
-                              <td className={`py-1.5 px-2 font-mono font-bold ${
-                                !hasBoth ? 'text-cyan-300' : diff ? 'text-red-400' : 'text-emerald-400'
-                              }`}>
+                              <td className={`py-1.5 px-2 font-mono font-bold ${!hasBoth ? 'text-cyan-300' : diff ? 'text-red-400' : 'text-emerald-400'
+                                }`}>
                                 {ugeP?.valor !== null && ugeP?.valor !== undefined ? String(ugeP.valor) : '---'}
                               </td>
                             )}
@@ -756,9 +757,8 @@ export const PitModal: React.FC<PitModalProps> = ({
                                   key={`${code}-${al.valor}`}
                                   disabled={writing || al.valor === null}
                                   onBlur={e => updateAlarmValue(code, e.target.value)}
-                                  className={`w-20 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none disabled:opacity-50 ${
-                                    outOfRange ? 'border-red-500 text-red-300 font-bold' : 'border-slate-700 text-slate-100'
-                                  }`}
+                                  className={`w-20 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none disabled:opacity-50 ${outOfRange ? 'border-red-500 text-red-300 font-bold' : 'border-slate-700 text-slate-100'
+                                    }`}
                                 />{' '}
                                 <span className="text-[10px] text-slate-500">{al.unidade}</span>
                               </td>
@@ -899,9 +899,8 @@ export const PitModal: React.FC<PitModalProps> = ({
                           return (
                             <div
                               key={i}
-                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${
-                                ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
-                              }`}
+                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
+                                }`}
                             >
                               <span>REG {w.reg} ({w.name})</span>
                               <span className="text-right">
@@ -931,9 +930,8 @@ export const PitModal: React.FC<PitModalProps> = ({
                           return (
                             <div
                               key={i}
-                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${
-                                ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
-                              }`}
+                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
+                                }`}
                             >
                               <span>REG {w.reg} ({w.name})</span>
                               <span className="text-right">
@@ -964,19 +962,21 @@ export const PitModal: React.FC<PitModalProps> = ({
                   </div>
                   <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
                     <div
-                      className={`h-full transition-all duration-200 ${
-                        writeDone === 'error'
+                      className={`h-full transition-all duration-200 ${writeDone === 'error'
                           ? 'bg-red-500'
                           : writeDone === 'success'
                             ? 'bg-emerald-500'
                             : 'bg-blue-500'
-                      }`}
+                        }`}
                       style={{
                         width: writeProgress.total > 0 ? `${(writeProgress.current / writeProgress.total) * 100}%` : '0%',
                       }}
                     />
                   </div>
-                  <div className="max-h-28 overflow-auto bg-black/50 rounded p-2 font-mono text-[10px] text-slate-300 space-y-0.5">
+                  <div
+                    ref={logContainerRef}
+                    className="max-h-28 overflow-auto bg-black/50 rounded p-2 font-mono text-[10px] text-slate-300 space-y-0.5"
+                  >
                     {writeLogs.map((l, idx) => (
                       <div key={idx}>{l}</div>
                     ))}
