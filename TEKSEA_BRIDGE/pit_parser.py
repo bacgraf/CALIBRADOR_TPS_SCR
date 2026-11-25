@@ -82,7 +82,7 @@ ALARM_CAN_MAP: Dict[str, Tuple[int, bool, float, int, bool, int, bool, str]] = {
     "AL17": (394, True,  0.1,    354, True,  290, True,  "Icons_sobre"),
     "AL18": (396, False, 0.1,    356, False, 292, True,  "Ibat_fonte"),
     "AL19": (395, True,  0.1,    355, True,  291, True,  "Temp_Bat"),
-    "AL20": (408, True,  1000.0, 368, True,  304, True,  "Manutencao"),
+    "AL20": (408, True,  0.1,    368, True,  304, True,  "Manutencao"),   # PIT em kh (0..300 kh) -> rede x0.1 kh (0..3000 int16)
     "AL21": (407, False, 1.0,    367, False, 303, True,  "Falha_UDQ"),
     "AL22": (387, True,  1.0,    339, True,  275, True,  "Reincidencia"),
     "AL23": (404, False, 1.0,    364, True,  300, True,  "Sens_Tbat"),  # Atu ja gravado em P13
@@ -416,23 +416,87 @@ def extract_rows_docx(path: str) -> List[List[str]]:
 
 
 def extract_rows_pdf(path: str) -> List[List[str]]:
+    """
+    Extrator geometrico rapido e deterministico usando coordenadas (x, y) das palavras
+    e retangulos da grade vetorial, imune a bugs de page.find_tables() no PyMuPDF 2.x.
+    """
     import pymupdf  # type: ignore
 
     doc = pymupdf.open(path)
     rows: List[List[str]] = []
+
     for page in doc:
-        tabs = page.find_tables()
-        if tabs and tabs.tables:
-            for tab in tabs.tables:
-                for row in tab.extract():
-                    cleaned = [c.replace("\n", " ").strip() if c else "" for c in row]
-                    if any(cleaned):
-                        rows.append(cleaned)
-        else:
-            # Fallback para texto simples se nao houver tabela detectada
-            for line in page.get_text("text").splitlines():
-                if line.strip():
-                    rows.append([line.strip()])
+        words = page.get_text("words")  # (x0, y0, x1, y1, text, block, line, word_no)
+        if not words:
+            continue
+
+        # Extrai todos os segmentos verticais de borda (linhas 'l' e retangulos 're') abaixo do cabecalho
+        v_segs: List[Tuple[float, float, float]] = []  # (x, y0, y1)
+        for d in page.get_drawings():
+            for item in d.get("items", []):
+                kind = item[0]
+                if kind == "re":
+                    r = item[1]
+                    if r.y1 > 55 and (r.y1 - r.y0) >= 6 and (r.x1 - r.x0) < 560:
+                        v_segs.append((r.x0, r.y0, r.y1))
+                        v_segs.append((r.x1, r.y0, r.y1))
+                elif kind == "l":
+                    p1, p2 = item[1], item[2]
+                    if abs(p1.x - p2.x) <= 1.5 and max(p1.y, p2.y) > 55 and abs(p2.y - p1.y) >= 6:
+                        v_segs.append(((p1.x + p2.x) * 0.5, min(p1.y, p2.y), max(p1.y, p2.y)))
+
+        # Agrupa palavras em linhas visuais por coordenada vertical central (yc)
+        words_sorted = sorted(words, key=lambda w: ((w[1] + w[3]) * 0.5, w[0]))
+        line_groups: List[List[Any]] = []
+        for w in words_sorted:
+            yc = (w[1] + w[3]) * 0.5
+            if line_groups:
+                prev_yc = sum((pw[1] + pw[3]) * 0.5 for pw in line_groups[-1]) / len(line_groups[-1])
+                if abs(yc - prev_yc) <= 4.5:
+                    line_groups[-1].append(w)
+                    continue
+            line_groups.append([w])
+
+        for lg in line_groups:
+            lg.sort(key=lambda w: w[0])
+            row_yc = sum((w[1] + w[3]) * 0.5 for w in lg) / len(lg)
+
+            # Bordas verticais que cruzam esta linha (yc)
+            local_edges_raw = [round(x, 1) for (x, y0, y1) in v_segs if (y0 - 2.5) <= row_yc <= (y1 + 2.5)]
+            x_edges: List[float] = []
+            for x in sorted(local_edges_raw):
+                if not x_edges or abs(x - x_edges[-1]) > 3.0:
+                    x_edges.append(x)
+
+            if len(x_edges) >= 4:
+                ncols = len(x_edges) - 1
+                cells = [""] * ncols
+                for w in lg:
+                    xc = (w[0] + w[2]) * 0.5
+                    col_idx = 0
+                    for ci in range(ncols):
+                        if x_edges[ci] - 2.0 <= xc <= x_edges[ci + 1] + 2.0:
+                            col_idx = ci
+                            break
+                        if xc > x_edges[ci + 1]:
+                            col_idx = ci
+                    cells[col_idx] = (cells[col_idx] + " " + w[4]).strip() if cells[col_idx] else w[4]
+                if any(cells):
+                    rows.append(cells)
+            else:
+                cells_simple: List[str] = []
+                cur = lg[0][4]
+                prev_x1 = lg[0][2]
+                for w in lg[1:]:
+                    if w[0] - prev_x1 < 8.0:
+                        cur += " " + w[4]
+                    else:
+                        cells_simple.append(cur.strip())
+                        cur = w[4]
+                    prev_x1 = w[2]
+                cells_simple.append(cur.strip())
+                rows.append(cells_simple)
+
     return rows
 
 
@@ -628,8 +692,11 @@ def parse_pit_rows(rows: List[List[str]]) -> Dict[str, Any]:
             if "CLIENTE" in nj and "MODELO EQUIPAMENTO" in nj and i + 1 < len(rows):
                 hdr_cols = [(idx, _norm(v)) for idx, v in ne]
                 val_row = rows[i + 1]
-                for idx, hname in hdr_cols:
-                    val = val_row[idx].strip() if idx < len(val_row) else ""
+                ne_val = _non_empty(val_row)
+                pairs = list(zip([h for _, h in hdr_cols], [v for _, v in ne_val])) if len(ne_val) == len(hdr_cols) else [
+                    (hname, val_row[idx].strip() if idx < len(val_row) else "") for idx, hname in hdr_cols
+                ]
+                for hname, val in pairs:
                     if "CLIENTE" in hname:
                         pit["meta"]["cliente"] = val
                     elif "MODELO" in hname:
@@ -1044,13 +1111,11 @@ def build_can_writes(pit: Dict[str, Any]) -> Dict[str, Any]:
             continue
         reg, rname, fmt, scale, bpu, tmult = PARAM_CAN_MAP[code]
         val = p["valor"]
-        if code == "P15":
-            # V/C -> pu/C com escala 0.001
-            raw_int = round((val / vcc_nom) / scale)
-        elif fmt == "int32":
+        if fmt == "int32":
             # Temporizacoes: unidade do PIT -> segundos (UGE multiplica x1000 internamente)
             raw_int = round(val * tmult)
         else:
+            # A UGE ja aplica a divisao por BPU_Vcc / BPU_Icc internamente ao receber o valor SI escalado
             raw_int = round(val / scale)
         add(phase2, reg, rname, fmt, raw_int, f"6.1:{code}")
 
@@ -1061,14 +1126,15 @@ def build_can_writes(pit: Dict[str, Any]) -> Dict[str, Any]:
         reg_atu, atu_rw, scale_atu, reg_opt, opt_rw, reg_rele, rele_rw, suffix = ALARM_CAN_MAP[code]
         if atu_rw and al["valor"] is not None:
             val = al["valor"]
-            if code == "AL20":
-                # kh (milhares de horas) -> s / 1000 (escala x1000 s)
-                raw_atu = round(val * 3600.0)
-            else:
-                raw_atu = round(val / scale_atu)
+            raw_atu = round(val / scale_atu)
             add(phase2, reg_atu, f"REG_Atu_{suffix}", "int16", raw_atu, f"6.2:{code}")
         if opt_rw:
-            opt_val = _pack_alarme_options(al.get("retardo_s"), al.get("acao", "ALM"))
+            if code == "AL27":
+                # AL27 (Cbat_baixa) usa base de 1 minuto (60000 ms) no campo retardo de 16 bits
+                ret_min = round((al.get("retardo_s") or 0.0) / 60.0)
+                opt_val = ((ret_min & 0xFFFF) << 0) | ((_pack_acao(al.get("acao", "ALM")) & 0xF) << 16)
+            else:
+                opt_val = _pack_alarme_options(al.get("retardo_s"), al.get("acao", "ALM"))
             add(phase2, reg_opt, f"REG_Opt_{suffix}", "int32", opt_val, f"6.2:{code}")
         if rele_rw:
             r = al["reles"]
