@@ -175,6 +175,66 @@ function snapshotToPitObject(snap: UgeSnapshot) {
   };
 }
 
+const BASE_REG_EXCEL_LABELS: Record<number, string> = {
+  160: '2.9 Nº SÉRIE',
+  161: '2.1 SAÍDA CC — TENS. NOM. (V)',
+  162: '2.1 SAÍDA CC — TENS. MAX. (%)',
+  163: '2.1 SAÍDA CC — CORR. NOM. (A)',
+  164: '2.1 SAÍDA CC — CORR. MAX. (%)',
+  165: '2.3 ENTRADA CA — TENS. NOM. (V)',
+  166: '2.3 ENTRADA CA — TENS. MÍN. (%)',
+  167: '2.3 ENTRADA CA — TENS. MÁX. (%)',
+  168: '2.3 ENTRADA CA — FREQ. NOM. (Hz)',
+  169: '2.1 SAÍDA CC — TENS. EME. (V)',
+  170: '2.2 UR — N. URs (módulos)',
+  171: '2.3 ENTRADA CA — SISTEMA',
+  178: '2.7 RELÉS FIXOS',
+  181: '2.8 CONTROLADOR — Nº DIODOS UDQ',
+  182: '2.8 CONTROLADOR — D. BLOQUEIO',
+  195: '2.5 I RETIFICADOR — TIPO',
+  196: '2.6 I BATERIA — TIPO',
+  198: '2.4 SENSOR ICA — TIPO',
+  211: '2.5 I RETIFICADOR — SHUNT (A)',
+  212: '2.6 I BATERIA — SHUNT (A)',
+  214: '2.4 SENSOR ICA — TC / ESPIRAS',
+};
+
+function formatCanItemLabel(item: CanWriteItem, pit: any): string {
+  if (BASE_REG_EXCEL_LABELS[item.reg]) {
+    return BASE_REG_EXCEL_LABELS[item.reg];
+  }
+  const src = item.source || '';
+  if (src.startsWith('6.1:')) {
+    const code = src.slice(4);
+    const desc = pit?.parametros?.[code]?.descricao;
+    return desc ? `6.1 ${code} — ${desc}` : `6.1 ${code}`;
+  }
+  if (src.startsWith('6.2:')) {
+    const code = src.slice(4);
+    const desc = pit?.alarmes?.[code]?.descricao;
+    const part = item.name.startsWith('REG_Atu_')
+      ? 'Valor'
+      : item.name.startsWith('REG_Opt_')
+        ? 'Ação/Retardo'
+        : item.name.startsWith('REG_Rele_')
+          ? 'Relés'
+          : '';
+    return `${desc ? `6.2 ${code} — ${desc}` : `6.2 ${code}`}${part ? ` (${part})` : ''}`;
+  }
+  if (src.startsWith('6.3:')) {
+    const code = src.slice(4);
+    const desc = pit?.entradas_digitais?.[code]?.descricao;
+    const part = item.name.startsWith('REG_Opt_') ? 'Config' : item.name.startsWith('REG_Rele_') ? 'Relés' : '';
+    return `${desc ? `6.3 ${code} — ${desc}` : `6.3 ${code}`}${part ? ` (${part})` : ''}`;
+  }
+  if (src.startsWith('6.4:')) {
+    const code = src.slice(4);
+    const desc = pit?.saidas_rele?.[code]?.descricao;
+    return desc ? `6.4 ${code} — ${desc} (Relés)` : `6.4 ${code} (Relés)`;
+  }
+  return item.name;
+}
+
 export const PitModal: React.FC<PitModalProps> = ({
   onClose,
   bridgeAlive,
@@ -189,7 +249,7 @@ export const PitModal: React.FC<PitModalProps> = ({
   const liveUgeRef = useRef({ ugeOk, errCod, errExt });
   liveUgeRef.current = { ugeOk, errCod, errExt };
   const [pitData, setPitData] = useState<PitResult | null>(null);
-  const [activeTab, setActiveTab] = useState<'base' | 'params' | 'alarms' | 'din' | 'relays' | 'can'>('base');
+  const [activeTab, setActiveTab] = useState<'base' | 'mostradores' | 'params' | 'alarms' | 'din' | 'relays' | 'can'>('base');
   const [parsing, setParsing] = useState(false);
   const [revalidating, setRevalidating] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -439,6 +499,31 @@ export const PitModal: React.FC<PitModalProps> = ({
     revalidatePit(next, `Status ${code} Relés = ${rawVal}`);
   };
 
+  const updateMostradorField = (field: string, rawVal: string) => {
+    if (!pitData) return;
+    const next = structuredClone(pitData.pit);
+    next.mostradores = next.mostradores || {};
+    if (field === 'digitos_vcc' || field === 'digitos_icc') {
+      const n = parseInt(rawVal.trim(), 10);
+      next.mostradores[field] = isNaN(n) ? null : n;
+    } else {
+      next.mostradores[field] = rawVal.trim();
+    }
+    revalidatePit(next, `5.Mostradores.${field} = ${rawVal}`);
+  };
+
+  const updateLimitField = (kind: 'param' | 'alarm', code: string, bound: 'min' | 'max', rawVal: string) => {
+    if (!pitData) return;
+    const next = structuredClone(pitData.pit);
+    const mapKey = kind === 'param' ? 'limites_parametros' : 'limites_alarmes';
+    next[mapKey] = next[mapKey] || {};
+    next[mapKey][code] = next[mapKey][code] || { min: null, max: null };
+    const trimmed = rawVal.trim();
+    const num = trimmed === '' || trimmed === '-' || trimmed === '—' ? null : parseFloat(trimmed.replace(',', '.'));
+    next[mapKey][code][bound] = num !== null && !isNaN(num) ? num : null;
+    revalidatePit(next, `${code}.${bound} = ${trimmed || '—'}`);
+  };
+
   const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
   const handleWriteToUge = async () => {
@@ -620,7 +705,7 @@ export const PitModal: React.FC<PitModalProps> = ({
               className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors"
             >
               <DownloadCloud className={`w-4 h-4 ${reading ? 'animate-bounce' : ''}`} />
-              {reading ? `LENDO UGE (${readProgress.current}/${readProgress.total})...` : ugeSnap ? 'ATUALIZAR LEITURA UGE' : 'LER DA UGE'}
+              {reading ? `LENDO UGE (${readProgress.current}/${readProgress.total} lotes)...` : ugeSnap ? 'ATUALIZAR LEITURA UGE' : 'LER DA UGE'}
             </button>
             {pitData ? (
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
@@ -724,6 +809,7 @@ export const PitModal: React.FC<PitModalProps> = ({
               <div className="flex flex-wrap gap-1.5 border-b border-slate-800 pb-2">
                 {[
                   { id: 'base', label: `2. Base & Sensores${pitData ? ` (${pitData.summary.phase1_writes} CAN)` : ''}` },
+                  ...(pitData ? [{ id: 'mostradores', label: '5. Mostradores (IHM)' }] : []),
                   { id: 'params', label: `6.1 Parâmetros (${pitData ? pitData.summary.params_parsed : Object.keys(ugeSnap?.parametros || {}).length}/19)` },
                   { id: 'alarms', label: `6.2 Alarmes (${pitData ? pitData.summary.alarms_parsed : Object.keys(ugeSnap?.alarmes || {}).length}/27)` },
                   { id: 'din', label: `6.3 Entradas Digitais (${pitData ? pitData.summary.din_parsed : Object.keys(ugeSnap?.entradas_digitais || {}).length}/8)` },
@@ -928,7 +1014,33 @@ export const PitModal: React.FC<PitModalProps> = ({
                             <td className="py-1.5 px-2 text-slate-400">{p.unidade}</td>
                             {pitData && (
                               <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">
-                                {lim ? `${lim.min ?? '—'} .. ${lim.max ?? '—'}` : '—'}
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="text"
+                                    defaultValue={lim?.min != null ? String(lim.min) : ''}
+                                    placeholder="mín"
+                                    key={`${code}-pmin-${lim?.min}`}
+                                    disabled={writing}
+                                    onBlur={e => {
+                                      const cur = lim?.min != null ? String(lim.min) : '';
+                                      if (cur !== e.target.value.trim()) updateLimitField('param', code, 'min', e.target.value);
+                                    }}
+                                    className="w-16 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px] outline-none"
+                                  />
+                                  <span>..</span>
+                                  <input
+                                    type="text"
+                                    defaultValue={lim?.max != null ? String(lim.max) : ''}
+                                    placeholder="máx"
+                                    key={`${code}-pmax-${lim?.max}`}
+                                    disabled={writing}
+                                    onBlur={e => {
+                                      const cur = lim?.max != null ? String(lim.max) : '';
+                                      if (cur !== e.target.value.trim()) updateLimitField('param', code, 'max', e.target.value);
+                                    }}
+                                    className="w-16 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px] outline-none"
+                                  />
+                                </div>
                               </td>
                             )}
                           </tr>
@@ -993,7 +1105,33 @@ export const PitModal: React.FC<PitModalProps> = ({
                             )}
                             {pitData && (
                               <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">
-                                {lim && lim.min !== null ? `${lim.min} .. ${lim.max}` : '—'}
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="text"
+                                    defaultValue={lim?.min != null ? String(lim.min) : ''}
+                                    placeholder="mín"
+                                    key={`${code}-amin-${lim?.min}`}
+                                    disabled={writing}
+                                    onBlur={e => {
+                                      const cur = lim?.min != null ? String(lim.min) : '';
+                                      if (cur !== e.target.value.trim()) updateLimitField('alarm', code, 'min', e.target.value);
+                                    }}
+                                    className="w-16 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px] outline-none"
+                                  />
+                                  <span>..</span>
+                                  <input
+                                    type="text"
+                                    defaultValue={lim?.max != null ? String(lim.max) : ''}
+                                    placeholder="máx"
+                                    key={`${code}-amax-${lim?.max}`}
+                                    disabled={writing}
+                                    onBlur={e => {
+                                      const cur = lim?.max != null ? String(lim.max) : '';
+                                      if (cur !== e.target.value.trim()) updateLimitField('alarm', code, 'max', e.target.value);
+                                    }}
+                                    className="w-16 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px] outline-none"
+                                  />
+                                </div>
                               </td>
                             )}
                             <td className="py-1.5 px-2 font-mono text-[11px] text-slate-300">
@@ -1240,6 +1378,76 @@ export const PitModal: React.FC<PitModalProps> = ({
                   </table>
                 )}
 
+                {activeTab === 'mostradores' && pitData && (
+                  <div className="space-y-4">
+                    <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                      <strong>Nota (Seção 5 — IHM):</strong> Número de dígitos, sequência de tela, vínculo e habilitação do teste de bateria são configurações do <strong>display da IHM</strong> (a UGE não possui registradores CAN para estes itens). Todos os campos abaixo podem ser conferidos e editados no PIT.
+                    </div>
+                    {[
+                      {
+                        title: '5.1 NÚMERO DE DÍGITOS',
+                        fields: [
+                          { k: 'digitos_vcc', label: 'TENSÃO CC', options: ['3', '4'] },
+                          { k: 'digitos_icc', label: 'CORRENTE CC', options: ['3', '4'] },
+                        ],
+                      },
+                      {
+                        title: '5.2 SEQUÊNCIA DE TELA',
+                        fields: [
+                          { k: 'sequencia_tela', label: 'SEQUÊNCIA', options: null as string[] | null },
+                          { k: 'vinculo', label: 'VÍNCULO', options: null as string[] | null },
+                        ],
+                      },
+                      {
+                        title: '5.3 MODOS DE CARGA',
+                        fields: [
+                          { k: 'teste_bateria', label: 'TESTE DE BATERIA', options: ['Habilitado', 'Desabilitado'] },
+                        ],
+                      },
+                    ].map(sec => (
+                      <div key={sec.title} className="space-y-1.5">
+                        <div className="text-[11px] font-bold text-blue-300 uppercase tracking-wide border-b border-slate-800/80 pb-1">
+                          {sec.title}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+                          {sec.fields.map(f => {
+                            const val = pitData.pit.mostradores?.[f.k];
+                            const strVal = val != null ? String(val) : '';
+                            return (
+                              <div key={f.k} className="bg-slate-900 border border-slate-800 rounded-lg p-2">
+                                <div className="text-[10px] text-slate-400 mb-1">{f.label}</div>
+                                {f.options ? (
+                                  <select
+                                    value={f.options.includes(strVal) ? strVal : f.options[0]}
+                                    disabled={writing}
+                                    onChange={e => updateMostradorField(f.k, e.target.value)}
+                                    className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-100 font-mono text-xs outline-none"
+                                  >
+                                    {f.options.map(opt => (
+                                      <option key={opt} value={opt}>{opt}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    defaultValue={strVal || '—'}
+                                    key={`most-${f.k}-${strVal}`}
+                                    disabled={writing}
+                                    onBlur={e => {
+                                      if (strVal !== e.target.value.trim()) updateMostradorField(f.k, e.target.value);
+                                    }}
+                                    className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-100 font-mono text-xs focus:border-blue-500 outline-none"
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {activeTab === 'can' && pitData && (
                   <div className="space-y-3 text-xs font-mono">
                     <div>
@@ -1253,11 +1461,14 @@ export const PitModal: React.FC<PitModalProps> = ({
                           return (
                             <div
                               key={i}
-                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
+                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between items-center gap-2 ${ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
                                 }`}
                             >
-                              <span>REG {w.reg} ({w.name})</span>
-                              <span className="text-right">
+                              <span className="truncate" title={`REG ${w.reg} (${w.name})`}>
+                                <span className="text-slate-100 font-sans font-semibold">{formatCanItemLabel(w, pitData.pit)}</span>
+                                <span className="ml-1.5 text-[10px] text-slate-500">[REG {w.reg}]</span>
+                              </span>
+                              <span className="text-right shrink-0">
                                 <span className="text-emerald-400">{w.value}</span>
                                 {ugeSnap && (
                                   <span className={`ml-2 ${actual === undefined ? 'text-slate-500' : match ? 'text-cyan-400' : 'text-red-400 font-bold'}`}>
@@ -1271,11 +1482,11 @@ export const PitModal: React.FC<PitModalProps> = ({
                       </div>
                     </div>
                     <div className="px-2 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded text-amber-300">
-                      REBOOT — REG {pitData.can_plan.reboot_cmd.reg} ({pitData.can_plan.reboot_cmd.name}) = {pitData.can_plan.reboot_cmd.value} (RBT_Normal) + aguarda 5,5s
+                      REBOOT — REINICIAR NORMAL DA UGE [REG {pitData.can_plan.reboot_cmd.reg}] = {pitData.can_plan.reboot_cmd.value} (RBT_Normal) + aguarda 5,5s
                     </div>
                     <div>
                       <div className="text-blue-400 font-bold mb-1">
-                        FASE 2 — Usuário, Alarmes, Entradas Digitais e Relés ({pitData.can_plan.phase2_user.length} writes)
+                        FASE 2 — 6.1 Parâmetros, 6.2 Alarmes, 6.3 Entradas Digitais e 6.4 Relés ({pitData.can_plan.phase2_user.length} writes)
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
                         {pitData.can_plan.phase2_user.map((w, i) => {
@@ -1284,11 +1495,14 @@ export const PitModal: React.FC<PitModalProps> = ({
                           return (
                             <div
                               key={i}
-                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
+                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between items-center gap-2 ${ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
                                 }`}
                             >
-                              <span>REG {w.reg} ({w.name})</span>
-                              <span className="text-right">
+                              <span className="truncate" title={`REG ${w.reg} (${w.name})`}>
+                                <span className="text-slate-100 font-sans font-semibold">{formatCanItemLabel(w, pitData.pit)}</span>
+                                <span className="ml-1.5 text-[10px] text-slate-500">[REG {w.reg}]</span>
+                              </span>
+                              <span className="text-right shrink-0">
                                 <span className="text-emerald-400">{w.value}</span>
                                 {ugeSnap && (
                                   <span className={`ml-2 ${actual === undefined ? 'text-slate-500' : match ? 'text-cyan-400' : 'text-red-400 font-bold'}`}>
