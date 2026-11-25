@@ -143,10 +143,12 @@ DIN_COMANDO_MAP = {
     "RESET": 4,
     "CARG.MAN": 5,
     "EQUAL.": 6,
-    "EMG.UDQ": 7,
-    "STD_BY": 8,
-    "DJB_DES": 9,
-    "DJC_DES": 10,
+    "EMG.UDQ": 17,
+    "STD_BY": 18,
+    "DJ_CA": 19,
+    "DJCA_DES": 19,
+    "DJB_DES": 20,
+    "DJC_DES": 21,
 }
 
 
@@ -1072,7 +1074,19 @@ def build_can_writes(pit: Dict[str, Any]) -> Dict[str, Any]:
     if base.get("icc_max_pct") is not None:
         add(phase1, 164, "REG_Icc_max", "int16", round((base["icc_max_pct"] / 100.0) * 1000), "2.1")
     if base.get("vca_nom") is not None:
-        add(phase1, 165, "REG_Vca_nom", "int16", round(base["vca_nom"] * 10), "2.3")
+        vca_nom = base["vca_nom"]
+        add(phase1, 165, "REG_Vca_nom", "int16", round(vca_nom * 10), "2.3")
+        # Ajusta faixa Vca_min (0.80..0.90 pu) e Vca_max (1.10..1.20 pu) conforme Secao 4.2 (AL01/AL02)
+        # para evitar que a UGE rejeite/sature AL01 (ex: 187V = 0.85pu) ou AL02 (ex: 253V = 1.15pu)
+        al01_min = pit.get("limites_alarmes", {}).get("AL01", {}).get("min")
+        al02_max = pit.get("limites_alarmes", {}).get("AL02", {}).get("max")
+        vca_min_pu = (al01_min / vca_nom) if (al01_min and vca_nom > 0) else 0.80
+        vca_max_pu = (al02_max / vca_nom) if (al02_max and vca_nom > 0) else 1.20
+        vca_min_pu = min(0.90, max(0.80, vca_min_pu))
+        vca_max_pu = min(1.20, max(1.10, vca_max_pu))
+        add(phase1, 166, "REG_Vca_min", "int16", round(vca_min_pu * 1000), "2.3/4.2")
+        add(phase1, 167, "REG_Vca_max", "int16", round(vca_max_pu * 1000), "2.3/4.2")
+        add(phase1, 168, "REG_Freq_nom", "int16", 600, "2.3")
     if base.get("ur_vcc_eme") is not None:
         add(phase1, 169, "REG_UR_Vcc_eme", "int16", round(base["ur_vcc_eme"] * 10), "2.1")
     if base.get("ur_quantidade") is not None:
@@ -1093,29 +1107,35 @@ def build_can_writes(pit: Dict[str, Any]) -> Dict[str, Any]:
         "2.7",
     )
 
-    if base.get("udq_diodos") is not None:
-        add(phase1, 181, "REG_UDQ_diodos", "int16", base["udq_diodos"], "2.8")
+    # REG_UDQ_diodos (181): sempre gravar; quando PIT='---' (None), gravar EMPTY_I16 (-32768)
+    udq_diodos = base.get("udq_diodos")
+    add(phase1, 181, "REG_UDQ_diodos", "int16", udq_diodos if udq_diodos is not None else EMPTY_I16, "2.8")
     if base.get("udq_diodo_bloqueio") is not None:
         add(phase1, 182, "REG_UDQ_Opcoes", "int16", base["udq_diodo_bloqueio"], "2.8")
 
-    # Sensores internos e externos
+    # Sensores internos (tipo e 1-based no firmware: 1=ShuntIso60mV/TC5A, 2=ShuntDif60mV em Ibat; valor=0x8000 quando N/A)
     if base.get("sensor_iret_tipo"):
-        t_iret = 1 if "ISO" in _norm(base["sensor_iret_tipo"]) else 0
-        add(phase1, 195, "REG_SInt_Iret", "int32", _pack_sensor_int(t_iret, 0), "2.5")
+        # No TPS125, _MAP_Sens_Int_Update aceita somente tipo=1 (SAD_ShuntIso60mV) para REG_SInt_Iret (195)
+        add(phase1, 195, "REG_SInt_Iret", "int32", _pack_sensor_int(1, 0x8000), "2.5")
     if base.get("sensor_iret_shunt_a") is not None:
         add(phase1, 211, "REG_SExt_Iret", "int32", _pack_sensor_ext(0, round(base["sensor_iret_shunt_a"] * 10), 0), "2.5")
 
     if base.get("sensor_ibat_tipo"):
-        t_ibat = 1 if "ISO" in _norm(base["sensor_ibat_tipo"]) else 0
-        add(phase1, 196, "REG_SInt_Ibat", "int32", _pack_sensor_int(t_ibat, 0), "2.6")
+        t_ibat = 2 if "DIF" in _norm(base["sensor_ibat_tipo"]) else 1
+        add(phase1, 196, "REG_SInt_Ibat", "int32", _pack_sensor_int(t_ibat, 0x8000), "2.6")
     if base.get("sensor_ibat_shunt_a") is not None:
         add(phase1, 212, "REG_SExt_Ibat", "int32", _pack_sensor_ext(0, round(base["sensor_ibat_shunt_a"] * 10), 0), "2.6")
 
     if base.get("sensor_ica_tipo"):
-        add(phase1, 198, "REG_SInt_Ica", "int32", _pack_sensor_int(0, 0), "2.4")
+        # _MAP_Sens_Int_Update aceita somente tipo=1 (SAA_TC5A) para REG_SInt_Ica (198)
+        add(phase1, 198, "REG_SInt_Ica", "int32", _pack_sensor_int(1, 0x8000), "2.4")
     if base.get("sensor_ica_tc_a") is not None:
         esp = base.get("sensor_ica_espiras") or 1
-        add(phase1, 214, "REG_SExt_Ica", "int32", _pack_sensor_ext(0, round(base["sensor_ica_tc_a"] * 10), esp), "2.4")
+        sext_ica_val = _pack_sensor_ext(0, round(base["sensor_ica_tc_a"] * 10), esp)
+        # CRITICO (_MAP_Sens_Ext_Update datafunc.inc:972-988): ao alterar valor1 (TC), o firmware
+        # invalida valor2 (espiras -> 0x80 EMPTY). A 2a escrita encontra valor1 igual e grava valor2!
+        add(phase1, 214, "REG_SExt_Ica", "int32", sext_ica_val, "2.4 (TC)")
+        add(phase1, 214, "REG_SExt_Ica", "int32", sext_ica_val, "2.4 (Espiras)")
 
     # ---------- FASE 2: SEC_Carga (P02 antes de P01!), Alarmes, DIN, Reles ----------
     param_order = ["P02", "P01"] + [f"P{k:02d}" for k in range(3, 20)]

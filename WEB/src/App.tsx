@@ -10,7 +10,7 @@ import { PitModal } from './PitModal';
 import pkg from '../package.json';
 
 const FRONTEND_VERSION = pkg.version;
-const EXPECTED_BRIDGE_VERSION = '2.1.0';
+const EXPECTED_BRIDGE_VERSION = '2.1.3';
 const GITHUB_BRIDGE_VERSION_URL = 'https://raw.githubusercontent.com/bacgraf/CALIBRADOR_TPS_SCR/main/TEKSEA_BRIDGE/version.json';
 
 function compareSemver(a: string, b: string): number {
@@ -1071,6 +1071,8 @@ export default function App() {
           connected={connected}
           ugeOk={Boolean(data.uge_ok)}
           ugeVers={data.uge_vers}
+          errCod={data.err_cod}
+          errExt={data.err_ext}
           request={request}
         />
       )}

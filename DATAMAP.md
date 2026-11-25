@@ -425,30 +425,32 @@ bit  [31]    — empty
 
 ### Tipos de sensor de tensão CC (SVD)
 
+> **Nota (validada em `_MAP_Sens_Int_Update` e `_GanhosSensores`):** os códigos `tipo` de sensores internos são **1-based** (`0` é inválido / retorna NACK).
+
 | Tipo | Nome | Valor (campo `valor`) |
 |------|------|-----------------------|
-| 0 | SVD_Diferencial | Resistor divisor em décimos de kΩ (10.0–390.0 kΩ) |
-| 1 | SVD_Isolado | Resistor divisor em décimos de kΩ (8.2–330.0 kΩ) |
+| 1 | SVD_Diferencial | Resistor divisor em décimos de kΩ (10.0–390.0 kΩ, padrão 100.0 kΩ) |
+| 2 | SVD_Isolado | Resistor divisor em décimos de kΩ (8.2–330.0 kΩ) |
 
 ### Tipos de sensor de corrente CC (SAD)
 
 | Tipo | Nome | Descrição |
 |------|------|-----------|
-| 0 | SAD_ShuntDif60mV | Shunt diferencial 60 mV (não isolado) |
-| 1 | SAD_ShuntIso60mV | Shunt isolado 60 mV (aceito em Iret e Ibat no TPS125) |
+| 1 | SAD_ShuntIso60mV | Shunt isolado 60 mV (único tipo aceito em `Iret` no TPS125; aceito em `Ibat`) |
+| 2 | SAD_ShuntDif60mV | Shunt diferencial 60 mV (aceito somente em `Ibat`, `REG_SInt_Ibat = 196`) |
 
 ### Tipos de sensor de tensão CA (SVA)
 
 | Tipo | Nome | Valor (campo `valor`) |
 |------|------|-----------------------|
-| 0 | SVA_Isolado | Resistor em décimos de kΩ (padrão 300.0 kΩ) |
-| 1 | SVA_Diferencial | Resistor em décimos de kΩ (20.0–22.0 kΩ) |
+| 1 | SVA_Isolado | Resistor em décimos de kΩ (padrão 300.0 kΩ) |
+| 2 | SVA_Diferencial | Resistor em décimos de kΩ (20.0–22.0 kΩ) |
 
 ### Tipos de sensor de corrente CA (SAA)
 
 | Tipo | Nome | Descrição |
 |------|------|-----------|
-| 0 | SAA_TC5A | Transformador de corrente 5 A |
+| 1 | SAA_TC5A | Transformador de corrente 5 A (único tipo aceito em `REG_SInt_Ica = 198`) |
 
 ---
 
@@ -491,6 +493,8 @@ bit  [31]    — empty
 ### Sensor externo de corrente CA (TC externo)
 
 `valor1` = corrente nominal do TC em décimos de A (10.0–300.0 A). `valor2` = número de espiras (1–9).
+
+> **Importante (`_MAP_Sens_Ext_Update`, `datafunc.inc:972-988`):** ao gravar `REG_SExt_Ica (214)` alterando `valor1` (corrente do TC), o firmware invalida `valor2` para `0x80` (`EMPTY`). Para gravar corrente do TC e número de espiras em sequência via CAN, enviar a escrita de `REG_SExt_Ica` **duas vezes**: na 1ª grava `valor1`, na 2ª (com `valor1` já igual ao atual) valida e grava `valor2`.
 
 ---
 

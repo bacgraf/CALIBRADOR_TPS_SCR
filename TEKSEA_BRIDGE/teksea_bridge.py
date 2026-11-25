@@ -18,7 +18,7 @@ import requests
 # ============================================================
 # CONFIGURAÇÕES TÉCNICAS
 # ============================================================
-BRIDGE_VERSION = "2.1.2"
+BRIDGE_VERSION = "2.1.3"
 GITHUB_BRIDGE_RAW = "https://raw.githubusercontent.com/bacgraf/CALIBRADOR_TPS_SCR/main/TEKSEA_BRIDGE"
 NET_SHARE_BRIDGE = r"\\srv01\01 TEKSEA\111 PUB\01 INTRANET\Marcel Hilleshein\DEV\CALIBRADOR_TPS_SCR\TEKSEA_BRIDGE"
 BRIDGE_UPDATE_FILES = [

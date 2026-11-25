@@ -53,11 +53,11 @@ Os valores trafegam em **Big Endian** como inteiros escalados:
 | 2.2 | UR — N. URs | `8 módulos` | **170** | `REG_UR_Quantidade` | R/W | `int16` | `×1` (1–32 → `8`) |
 | 2.3 | ENTRADA CA — TENS. NOM. | `220 V` | **165** | `REG_Vca_nom` | R/W | `int16` | `×0.1` V (100–500 Vrms → `2200`) |
 | 2.3 | ENTRADA CA — SISTEMA | `3P4W-380` | **171** | `REG_UR_Sistema` | R/W | `int16` | `0`=1P2W-127, `1`=1P2W-220, `2`=3P3W-220, **`3`=3P4W-380** |
-| 2.4 | SENSOR ICA — TIPO | `TC` | **198** | `REG_SInt_Ica` | R/W | `int32` | `tuParamSensorInt` (`tipo=0` `SAA_TC5A`) |
-| 2.4 | SENSOR ICA — TC / ESPIRAS | `50 A` / `1` | **214** | `REG_SExt_Ica` | R/W | `int32` | `tuParamSensorExt` (`valor1=500` [0.1 A], `valor2=1` espira) |
-| 2.5 | SENSOR I RET — TIPO | `ShuntIso60mV` | **195** | `REG_SInt_Iret` | R/W | `int32` | `tuParamSensorInt` (`0`=Dif60mV, `1`=Iso60mV) |
+| 2.4 | SENSOR ICA — TIPO | `TC` | **198** | `REG_SInt_Ica` | R/W | `int32` | `tuParamSensorInt` (`tipo=1` `SAA_TC5A`, `valor=0x8000`) |
+| 2.4 | SENSOR ICA — TC / ESPIRAS | `50 A` / `1` | **214** | `REG_SExt_Ica` | R/W | `int32` | `tuParamSensorExt` (`valor1=500`, `valor2=1`) — **enviar 2×** (1ª grava TC, 2ª grava espiras) |
+| 2.5 | SENSOR I RET — TIPO | `ShuntIso60mV` | **195** | `REG_SInt_Iret` | R/W | `int32` | `tuParamSensorInt` (`tipo=1` `SAD_ShuntIso60mV`, `valor=0x8000`) |
 | 2.5 | SENSOR I RET — SHUNT | `150 A` | **211** | `REG_SExt_Iret` | R/W | `int32` | `tuParamSensorExt` (`tipo=0`, `valor1=1500` [0.1 A]) |
-| 2.6 | SENSOR I BAT — TIPO | `ShuntIso60mV` | **196** | `REG_SInt_Ibat` | R/W | `int32` | `tuParamSensorInt` (`1`=`SAD_ShuntIso60mV`) |
+| 2.6 | SENSOR I BAT — TIPO | `ShuntIso60mV` | **196** | `REG_SInt_Ibat` | R/W | `int32` | `tuParamSensorInt` (`1`=`SAD_ShuntIso60mV`, `2`=`SAD_ShuntDif60mV`, `valor=0x8000`) |
 | 2.6 | SENSOR I BAT — SHUNT | `150 A` | **212** | `REG_SExt_Ibat` | R/W | `int32` | `tuParamSensorExt` (`tipo=0`, `valor1=1500` [0.1 A]) |
 | 2.7 | RELÉS FIXOS (CA, UDQ 1–3, CC) | `0` (todos) | **178** | `REG_Reles_Fixos` | R/W | `int32` | Bitfield bruto (`0` = nenhum alocado) |
 | 2.8 | CONTROLADOR — Nº DIODOS UDQ | `---` | **181** | `REG_UDQ_diodos` | R/W | `int16` | `×1` (4–20; `0x8000` EMPTY se `---`) |

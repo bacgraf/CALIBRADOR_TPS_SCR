@@ -47,6 +47,8 @@ interface PitModalProps {
   connected: boolean;
   ugeOk: boolean;
   ugeVers?: string;
+  errCod?: number;
+  errExt?: number;
   request: (msg: any, timeout?: number) => Promise<any>;
 }
 
@@ -71,8 +73,12 @@ export const PitModal: React.FC<PitModalProps> = ({
   connected,
   ugeOk,
   ugeVers,
+  errCod,
+  errExt,
   request,
 }) => {
+  const liveUgeRef = useRef({ ugeOk, errCod, errExt });
+  liveUgeRef.current = { ugeOk, errCod, errExt };
   const [pitData, setPitData] = useState<PitResult | null>(null);
   const [activeTab, setActiveTab] = useState<'base' | 'params' | 'alarms' | 'din' | 'relays' | 'can'>('base');
   const [parsing, setParsing] = useState(false);
@@ -213,7 +219,8 @@ export const PitModal: React.FC<PitModalProps> = ({
       step += 1;
       setWriteProgress({ current: step, total });
       appendLog(`OK reg=${item.reg} (${item.name}) = ${item.value} [${item.source}]`);
-      await sleep(140);
+      // Espacamento de 380 ms para garantir conclusao da gravacao na EEPROM I2C (CAN_Sup.delayed_ack.pending)
+      await sleep(380);
     };
 
     try {
@@ -233,8 +240,22 @@ export const PitModal: React.FC<PitModalProps> = ({
       if (cancelRef.current) throw new Error('CANCELLED');
       setWritePhase('Fase 2/3: Reiniciando UGE (RBT_Normal) e aguardando retorno...');
       await sendItem(reboot_cmd);
-      appendLog('Aguardando reinicializacao da UGE (4,0 s)...');
-      await sleep(4000);
+      appendLog('Aguardando reinicializacao da UGE (5,5 s)...');
+      await sleep(5500);
+
+      // Aguarda link CAN retomar (ate +4s) e valida se a UGE nao entrou em [1-xxx] PARAM
+      for (let wait = 0; wait < 8 && !liveUgeRef.current.ugeOk; wait++) {
+        if (cancelRef.current) throw new Error('CANCELLED');
+        await sleep(500);
+      }
+      if (!liveUgeRef.current.ugeOk) {
+        throw new Error('Link CAN com a UGE não retornou após o reboot.');
+      }
+      if (liveUgeRef.current.errCod === 1) {
+        throw new Error(
+          `UGE acusou falha [1-${liveUgeRef.current.errExt ?? 0}] PARAM após o reboot. Fase 2 abortada (a UGE rejeita parâmetros de usuário/alarmes enquanto houver erro PARAM).`
+        );
+      }
 
       // FASE 2: Parametros de Usuario, Alarmes, Entradas Digitais e Reles
       setWritePhase('Fase 3/3: Gravando Parâmetros de Usuário, Alarmes e Relés...');
