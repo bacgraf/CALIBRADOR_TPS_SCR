@@ -1,5 +1,5 @@
 {
-  "version": "2.1.1",
+  "version": "2.1.2",
   "min_version": "2.1.0",
   "release_date": "2026-11-25",
   "changelog": "Adiciona POST /api/parse-pit e /api/pit/revalidate (CSV, XLSX, DOCX, PDF -> CAN TPS125), versionamento em /sys/status e auto-atualizacao via POST /sys/update."

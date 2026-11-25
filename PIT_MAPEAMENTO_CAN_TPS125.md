@@ -65,17 +65,18 @@ Os valores trafegam em **Big Endian** como inteiros escalados:
 | 2.9 | EQUIPAMENTO — Nº SÉRIE | `15743` | **160** | `REG_SN_Equip` | R/W | `int32` | `×1` inteiro (máx. 6 dígitos → `15743`) |
 | *Ação* | Reiniciar "NORMAL" UGE | — | **426** | `REG_Cmd_Reboot` | CMD | `int16` | `1`=`RBT_Normal`, `3`=`RBT_Ajustes` |
 
-### Estruturas de Bits — Sensores Internos e Externos
+### Estruturas de Bits — Sensores Internos e Externos (confirmadas via DWARF do firmware)
 ```text
 tuParamSensorInt (int32 — regs 192–199):
-  bits [6:0]   — tipo   (7 bits)
-  bits [22:7]  — valor  (16 bits)
+  bits [15:0]  — valor  (16 bits — resistor divisor em 0.1 kΩ, quando aplicável)
+  bits [23:16] — rsvd   (8 bits)
+  bits [30:24] — tipo   (7 bits — ex: 0=ShuntDif60mV/TC5A, 1=ShuntIso60mV)
   bit  [31]    — empty
 
 tuParamSensorExt (int32 — regs 208–215):
-  bits [6:0]   — tipo   (7 bits)
-  bits [22:7]  — valor1 (16 bits — corrente nominal em 0.1 A ou tensão TP em 0.1 V)
-  bits [30:23] — valor2 (8 bits  — nº de espiras do TC, 1–9)
+  bits [15:0]  — valor1 (16 bits — corrente nominal em 0.1 A ou tensão TP em 0.1 V)
+  bits [23:16] — valor2 (8 bits  — nº de espiras do TC, 1–9)
+  bits [30:24] — tipo   (7 bits)
   bit  [31]    — empty
 ```
 

@@ -272,11 +272,25 @@ def _pack_alarme_options(
 
 
 def _pack_sensor_int(tipo: int, valor: int = 0) -> int:
-    return ((tipo & 0x7F) << 0) | ((valor & 0xFFFF) << 7)
+    """
+    tuParamSensorInt (extraido do DWARF de burnin.out):
+      bits [15:0]  = valor (16 bits)
+      bits [23:16] = rsvd  (8 bits)
+      bits [30:24] = tipo  (7 bits)
+      bit  [31]    = empty (1 bit)
+    """
+    return ((valor & 0xFFFF) << 0) | ((tipo & 0x7F) << 24)
 
 
 def _pack_sensor_ext(tipo: int, valor1: int = 0, valor2: int = 0) -> int:
-    return ((tipo & 0x7F) << 0) | ((valor1 & 0xFFFF) << 7) | ((valor2 & 0xFF) << 23)
+    """
+    tuParamSensorExt (extraido do DWARF de burnin.out):
+      bits [15:0]  = valor1 (16 bits - corrente em 0.1 A ou tensao TP em 0.1 V)
+      bits [23:16] = valor2 (8 bits  - espiras do TC, 1..9)
+      bits [30:24] = tipo   (7 bits)
+      bit  [31]    = empty  (1 bit)
+    """
+    return ((valor1 & 0xFFFF) << 0) | ((valor2 & 0xFF) << 16) | ((tipo & 0x7F) << 24)
 
 
 # ============================================================================
