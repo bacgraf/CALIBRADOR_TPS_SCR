@@ -384,9 +384,15 @@ export function decodeUgeRegisters(raw: Record<number, number>, regsRead: number
     reles_fixos: rf,
     udq_diodos: r16(181, 1),
     udq_diodo_bloqueio: isEmpty16(raw[182]) ? null : (raw[182] & 0x3),
+    sensor_ica_tipo: (() => {
+      const s = unpackSensorInt(raw[198], 'ica');
+      return s === 'TC 5A' ? 'TC' : s;
+    })(),
     sensor_ica_tc_a: isEmpty32(sextIca) || (sextIca & 0xffff) === 0x8000 ? null : (sextIca & 0xffff) / 10,
     sensor_ica_espiras: isEmpty32(sextIca) || ((sextIca >>> 16) & 0xff) === 0x80 ? null : ((sextIca >>> 16) & 0xff),
+    sensor_iret_tipo: unpackSensorInt(raw[195], 'icc'),
     sensor_iret_shunt_a: isEmpty32(sextIret) || (sextIret & 0xffff) === 0x8000 ? null : (sextIret & 0xffff) / 10,
+    sensor_ibat_tipo: unpackSensorInt(raw[196], 'icc'),
     sensor_ibat_shunt_a: isEmpty32(sextIbat) || (sextIbat & 0xffff) === 0x8000 ? null : (sextIbat & 0xffff) / 10,
   };
 

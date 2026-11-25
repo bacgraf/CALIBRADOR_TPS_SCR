@@ -230,8 +230,15 @@ export const PitModal: React.FC<PitModalProps> = ({
   const updateBaseField = (field: string, rawVal: string) => {
     if (!pitData) return;
     const next = structuredClone(pitData.pit);
-    if (field === 'ur_sistema') {
+    if (field.startsWith('reles_fixos.')) {
+      const sub = field.split('.')[1];
+      next.base.reles_fixos = next.base.reles_fixos || {};
+      const num = parseInt(rawVal.trim(), 10);
+      next.base.reles_fixos[sub] = isNaN(num) ? 0 : num;
+    } else if (field === 'ur_sistema') {
       next.base[field] = rawVal.trim().toUpperCase();
+    } else if (field === 'sensor_ica_tipo' || field === 'sensor_iret_tipo' || field === 'sensor_ibat_tipo') {
+      next.base[field] = rawVal.trim();
     } else {
       const num = parseFloat(rawVal.replace(',', '.'));
       next.base[field] = isNaN(num) ? null : num;
@@ -572,71 +579,111 @@ export const PitModal: React.FC<PitModalProps> = ({
               <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3 max-h-[380px] overflow-auto">
                 {activeTab === 'base' && (
                   <div className="space-y-4">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                      {[
-                        { k: 'vcc_nom', label: 'Tensão CC Nom. (V)', reg: 161 },
-                        { k: 'icc_nom', label: 'Corrente CC Nom. (A)', reg: 163 },
-                        { k: 'vcc_max_pct', label: 'Tensão CC Máx. (%)', reg: 162 },
-                        { k: 'icc_max_pct', label: 'Corrente CC Máx. (%)', reg: 164 },
-                        { k: 'ur_vcc_eme', label: 'Tensão Emerg. UR (V)', reg: 169 },
-                        { k: 'ur_quantidade', label: 'Nº Módulos UR', reg: 170 },
-                        { k: 'vca_nom', label: 'Tensão CA Nom. (V)', reg: 165 },
-                        { k: 'ur_sistema', label: 'Sistema CA', reg: 171 },
-                        { k: 'udq_diodos', label: 'Nº Diodos UDQ', reg: 181 },
-                        { k: 'udq_diodo_bloqueio', label: 'D. Bloqueio UDQ', reg: 182 },
-                        { k: 'sensor_ica_tc_a', label: 'TC Entrada CA (A)', reg: 214 },
-                        { k: 'sensor_ica_espiras', label: 'Espiras TC CA', reg: 214 },
-                        { k: 'sensor_iret_shunt_a', label: 'Shunt I Ret. (A)', reg: 211 },
-                        { k: 'sensor_ibat_shunt_a', label: 'Shunt I Bat. (A)', reg: 212 },
-                        { k: 'sn_equip', label: 'Nº Série Equip.', reg: 160 },
-                      ].map(f => {
-                        const pitVal = pitData?.pit.base?.[f.k];
-                        const ugeVal = ugeSnap?.base?.[f.k];
-                        const hasBoth = Boolean(pitData && ugeSnap);
-                        const match = hasBoth && String(pitVal ?? '---') === String(ugeVal ?? '---');
-                        return (
-                          <div
-                            key={f.k}
-                            className={`bg-slate-900 border rounded-lg p-2 ${hasBoth ? (match ? 'border-emerald-500/40' : 'border-red-500/50') : 'border-slate-800'
-                              }`}
-                          >
-                            <div className="flex justify-between text-[10px] text-slate-400 mb-1">
-                              <span>{f.label}</span>
-                              <span className="font-mono text-blue-400">REG {f.reg}</span>
-                            </div>
-                            {pitData ? (
-                              <input
-                                type="text"
-                                defaultValue={pitVal ?? '---'}
-                                key={`${f.k}-${pitVal}`}
-                                disabled={writing}
-                                onBlur={e => {
-                                  if (String(pitVal ?? '') !== e.target.value.trim()) {
-                                    updateBaseField(f.k, e.target.value);
-                                  }
-                                }}
-                                className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-100 font-mono text-xs focus:border-blue-500 outline-none"
-                              />
-                            ) : (
-                              <div className="px-2 py-1 rounded bg-slate-950 border border-slate-800 text-cyan-300 font-mono text-xs">
-                                {ugeVal ?? '---'}
-                              </div>
-                            )}
-                            {pitData && ugeSnap && (
-                              <div className={`mt-1 text-[10px] font-mono flex justify-between ${match ? 'text-emerald-400' : 'text-red-400 font-bold'}`}>
-                                <span>UGE:</span>
-                                <span>{ugeVal ?? '---'}</span>
-                              </div>
-                            )}
+                    {[
+                      {
+                        title: '2.1 SAÍDA CC',
+                        fields: [
+                          { k: 'vcc_nom', label: 'TENS. NOM. (V)', reg: 161 },
+                          { k: 'icc_nom', label: 'CORR. NOM. (A)', reg: 163 },
+                          { k: 'vcc_max_pct', label: 'TENS. MAX. (%)', reg: 162 },
+                          { k: 'icc_max_pct', label: 'CORR. MAX. (%)', reg: 164 },
+                          { k: 'ur_vcc_eme', label: 'TENS. EME. (V)', reg: 169 },
+                        ],
+                      },
+                      {
+                        title: '2.2 UR  ·  2.3 ENTRADA CA  ·  2.8 CONTROLADOR  ·  2.9 EQUIPAMENTO',
+                        fields: [
+                          { k: 'ur_quantidade', label: 'N. URs (módulos)', reg: 170 },
+                          { k: 'vca_nom', label: 'TENS. NOM. CA (V)', reg: 165 },
+                          { k: 'ur_sistema', label: 'SISTEMA', reg: 171 },
+                          { k: 'udq_diodos', label: 'Nº DIODOS UDQ (und)', reg: 181 },
+                          { k: 'udq_diodo_bloqueio', label: 'D. BLOQUEIO (und)', reg: 182 },
+                          { k: 'sn_equip', label: 'Nº SÉRIE', reg: 160 },
+                        ],
+                      },
+                      {
+                        title: '2.4 SENSOR ICA  ·  2.5 SENSORES CC - I RETIFICADOR  ·  2.6 SENSORES CC - I BATERIA',
+                        fields: [
+                          { k: 'sensor_ica_tipo', label: '2.4 ICA — TIPO', reg: 198 },
+                          { k: 'sensor_ica_tc_a', label: '2.4 ICA — TC (A)', reg: 214 },
+                          { k: 'sensor_ica_espiras', label: '2.4 ICA — ESPIRAS (voltas)', reg: 214 },
+                          { k: 'sensor_iret_tipo', label: '2.5 I RET — TIPO', reg: 195 },
+                          { k: 'sensor_iret_shunt_a', label: '2.5 I RET — SHUNT (A)', reg: 211 },
+                          { k: 'sensor_ibat_tipo', label: '2.6 I BAT — TIPO', reg: 196 },
+                          { k: 'sensor_ibat_shunt_a', label: '2.6 I BAT — SHUNT (A)', reg: 212 },
+                        ],
+                      },
+                      {
+                        title: '2.7 RELÉS FIXOS (REG 178)',
+                        fields: [
+                          { k: 'reles_fixos.desconexao_ca', label: 'DESCONEXAO CA (nº relé)', reg: 178 },
+                          { k: 'reles_fixos.udq_estagio_1', label: 'UDQ ESTAGIO 1 (nº relé)', reg: 178 },
+                          { k: 'reles_fixos.udq_estagio_2', label: 'UDQ ESTAGIO 2 (nº relé)', reg: 178 },
+                          { k: 'reles_fixos.udq_estagio_3', label: 'UDQ ESTAGIO 3 (nº relé)', reg: 178 },
+                          { k: 'reles_fixos.desconexao_cc', label: 'DESCONEXAO CC (nº relé)', reg: 178 },
+                        ],
+                      },
+                    ].map(sec => {
+                      const getVal = (obj: any, k: string) =>
+                        k.startsWith('reles_fixos.') ? obj?.reles_fixos?.[k.split('.')[1]] : obj?.[k];
+                      return (
+                        <div key={sec.title} className="space-y-1.5">
+                          <div className="text-[11px] font-bold text-blue-300 uppercase tracking-wide border-b border-slate-800/80 pb-1">
+                            {sec.title}
                           </div>
-                        );
-                      })}
-                    </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 text-xs">
+                            {sec.fields.map(f => {
+                              const pitVal = getVal(pitData?.pit.base, f.k);
+                              const ugeVal = getVal(ugeSnap?.base, f.k);
+                              const hasBoth = Boolean(pitData && ugeSnap);
+                              const normCmp = (v: any) => String(v ?? '---').trim().toUpperCase();
+                              const match = hasBoth && normCmp(pitVal) === normCmp(ugeVal);
+                              return (
+                                <div
+                                  key={f.k}
+                                  className={`bg-slate-900 border rounded-lg p-2 ${hasBoth ? (match ? 'border-emerald-500/40' : 'border-red-500/50') : 'border-slate-800'
+                                    }`}
+                                >
+                                  <div className="flex justify-between text-[10px] text-slate-400 mb-1 gap-1">
+                                    <span className="truncate">{f.label}</span>
+                                    <span className="font-mono text-blue-400 shrink-0">REG {f.reg}</span>
+                                  </div>
+                                  {pitData ? (
+                                    <input
+                                      type="text"
+                                      defaultValue={pitVal ?? '---'}
+                                      key={`${f.k}-${pitVal}`}
+                                      disabled={writing}
+                                      onBlur={e => {
+                                        if (String(pitVal ?? '') !== e.target.value.trim()) {
+                                          updateBaseField(f.k, e.target.value);
+                                        }
+                                      }}
+                                      className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-100 font-mono text-xs focus:border-blue-500 outline-none"
+                                    />
+                                  ) : (
+                                    <div className="px-2 py-1 rounded bg-slate-950 border border-slate-800 text-cyan-300 font-mono text-xs">
+                                      {ugeVal ?? '---'}
+                                    </div>
+                                  )}
+                                  {pitData && ugeSnap && (
+                                    <div className={`mt-1 text-[10px] font-mono flex justify-between ${match ? 'text-emerald-400' : 'text-red-400 font-bold'}`}>
+                                      <span>UGE:</span>
+                                      <span>{ugeVal ?? '---'}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
 
                     {ugeSnap && (
                       <div className="border-t border-slate-800 pt-3">
                         <div className="text-[11px] font-bold text-cyan-400 mb-2 uppercase tracking-wide">
-                          Sensores Lidos da UGE (192–198 Internos · 211–214 Externos)
+                          Diagnóstico Bruto de Todos os Sensores na UGE (192–198 Internos · 211–214 Externos)
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
                           {ugeSnap.sensores.map(s => (
