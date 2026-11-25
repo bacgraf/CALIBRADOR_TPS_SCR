@@ -8,8 +8,16 @@
 #include <string.h>
 
 static SemaphoreHandle_t lock;
+static SemaphoreHandle_t read_sem;
 static serial_status_t serial;
 static relay_status_t relay;
+static struct {
+    bool active;
+    uint16_t start_reg;
+    uint8_t qtd;
+    uint8_t mask;
+    uint32_t values[4];
+} manual_read;
 static unsigned serial_phase, relay_step;
 static uint32_t serial_started, serial_next, relay_next, relay_stop_started;
 static bool serial_waiting, relay_waiting;
@@ -19,6 +27,8 @@ static bool due(uint32_t now, uint32_t deadline) { return (int32_t)(now - deadli
 void device_operations_init(void) {
     lock = xSemaphoreCreateMutex();
     configASSERT(lock);
+    read_sem = xSemaphoreCreateBinary();
+    configASSERT(read_sem);
     snprintf(relay.message, sizeof(relay.message), "Nenhum teste iniciado");
 }
 
@@ -98,6 +108,42 @@ bool device_operations_manual_write(uint16_t reg, uint8_t format, double value) 
     return sent;
 }
 
+bool device_operations_read_reg(uint16_t reg, uint8_t format, uint8_t qtd, uint32_t *out_values, uint32_t timeout_ms) {
+    if (!out_values || qtd < 1 || qtd > 4) return false;
+    if (format == 4 && qtd > 2) return false;
+    if (format != 2 && format != 4) return false;
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        xSemaphoreTake(lock, portMAX_DELAY);
+        manual_read.active = true;
+        manual_read.start_reg = reg;
+        manual_read.qtd = qtd;
+        manual_read.mask = 0;
+        memset(manual_read.values, 0, sizeof(manual_read.values));
+        xSemaphoreTake(read_sem, 0); // limpa sinal residual
+        bool sent = can_protocol_transmit_req_read(reg, format, qtd);
+        if (!sent) {
+            manual_read.active = false;
+            xSemaphoreGive(lock);
+            return false;
+        }
+        xSemaphoreGive(lock);
+
+        if (xSemaphoreTake(read_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+            xSemaphoreTake(lock, portMAX_DELAY);
+            memcpy(out_values, manual_read.values, qtd * sizeof(uint32_t));
+            manual_read.active = false;
+            xSemaphoreGive(lock);
+            return true;
+        }
+
+        xSemaphoreTake(lock, portMAX_DELAY);
+        manual_read.active = false;
+        xSemaphoreGive(lock);
+    }
+    return false;
+}
+
 void device_operations_tick(uint32_t now) {
     xSemaphoreTake(lock, portMAX_DELAY);
     if (serial.busy) {
@@ -153,6 +199,17 @@ void device_operations_tick(uint32_t now) {
 
 void device_operations_on_read(uint16_t reg, uint32_t value) {
     xSemaphoreTake(lock, portMAX_DELAY);
+    if (manual_read.active && reg >= manual_read.start_reg &&
+        reg < (uint16_t)(manual_read.start_reg + manual_read.qtd)) {
+        uint8_t idx = (uint8_t)(reg - manual_read.start_reg);
+        manual_read.values[idx] = value;
+        manual_read.mask |= (uint8_t)(1U << idx);
+        uint8_t full_mask = (uint8_t)((1U << manual_read.qtd) - 1U);
+        if (manual_read.mask == full_mask) {
+            manual_read.active = false;
+            xSemaphoreGive(read_sem);
+        }
+    }
     if (serial.busy && serial_waiting) {
         if (reg == REG_SN_CPU) serial.cpu_ok = value == serial.value;
         if (reg == REG_SN_UGE) serial.uge_ok = value == serial.value;

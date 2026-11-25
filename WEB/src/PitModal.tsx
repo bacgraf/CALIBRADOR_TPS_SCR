@@ -1,8 +1,9 @@
 import React, { useState, useRef } from 'react';
 import {
   FileSpreadsheet, Upload, AlertTriangle, CheckCircle2, XCircle,
-  Cpu, Play, Square, RefreshCw, Info, X
+  Cpu, Play, Square, RefreshCw, Info, X, DownloadCloud
 } from 'lucide-react';
+import { UGE_READ_BATCHES, decodeUgeRegisters, UgeSnapshot } from './lib/ugePitReader';
 
 interface CanWriteItem {
   reg: number;
@@ -94,6 +95,58 @@ export const PitModal: React.FC<PitModalProps> = ({
   const [writeDone, setWriteDone] = useState<'idle' | 'success' | 'error' | 'cancelled'>('idle');
   const cancelRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Estado de leitura da UGE (conferência / inspeção)
+  const [reading, setReading] = useState(false);
+  const [readProgress, setReadProgress] = useState({ current: 0, total: 0 });
+  const [ugeSnap, setUgeSnap] = useState<UgeSnapshot | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+
+  const handleReadFromUge = async () => {
+    if (!connected || !ugeOk || reading || writing) return;
+    cancelRef.current = false;
+    setReading(true);
+    setReadError(null);
+    const totalBatches = UGE_READ_BATCHES.length;
+    const totalRegs = UGE_READ_BATCHES.reduce((acc, b) => acc + b.qtd, 0);
+    setReadProgress({ current: 0, total: totalBatches });
+    const rawMap: Record<number, number> = {};
+    let okCount = 0;
+    let failCount = 0;
+
+    try {
+      for (let i = 0; i < totalBatches; i++) {
+        if (cancelRef.current) break;
+        const b = UGE_READ_BATCHES[i];
+        try {
+          const resp = await request({ command: 'read_reg', reg: b.reg, format: b.format, qtd: b.qtd }, 2500);
+          if (resp?.success && Array.isArray(resp.values)) {
+            resp.values.forEach((v: number, idx: number) => {
+              rawMap[b.reg + idx] = v;
+              okCount += 1;
+            });
+          } else {
+            failCount += b.qtd;
+          }
+        } catch {
+          failCount += b.qtd;
+        }
+        setReadProgress({ current: i + 1, total: totalBatches });
+      }
+      if (!cancelRef.current) {
+        if (okCount === 0) {
+          setReadError('Nenhum registrador respondeu. Verifique se o firmware do ESP32 está atualizado com suporte a read_reg.');
+        } else {
+          setUgeSnap(decodeUgeRegisters(rawMap, okCount, totalRegs));
+          if (failCount > 0) {
+            setReadError(`Leitura parcial: ${okCount}/${totalRegs} registradores lidos (${failCount} sem resposta).`);
+          }
+        }
+      }
+    } finally {
+      setReading(false);
+    }
+  };
 
   const appendLog = (msg: string) => {
     const ts = new Date().toLocaleTimeString('pt-BR');
@@ -283,7 +336,33 @@ export const PitModal: React.FC<PitModalProps> = ({
   };
 
   const hasErrors = (pitData?.summary.errors_count ?? 0) > 0;
-  const canWrite = Boolean(pitData && !hasErrors && connected && ugeOk && !writing);
+  const canWrite = Boolean(pitData && !hasErrors && connected && ugeOk && !writing && !reading);
+  const canRead = Boolean(connected && ugeOk && !writing && !reading);
+  const hasContent = Boolean(pitData || ugeSnap);
+
+  // Calcula resumo de conferência quando PIT e UGE estão ambos carregados
+  const diffStats = React.useMemo(() => {
+    if (!pitData || !ugeSnap) return null;
+    const allItems = [...pitData.can_plan.phase1_base, ...pitData.can_plan.phase2_user];
+    // Deduplica por reg (mantém a última escrita, ex: reg 214 enviado 2x)
+    const byReg = new Map<number, CanWriteItem>();
+    for (const it of allItems) byReg.set(it.reg, it);
+    let matched = 0;
+    let mismatched = 0;
+    let missing = 0;
+    for (const [reg, it] of byReg.entries()) {
+      const actual = ugeSnap.raw[reg];
+      if (actual === undefined) {
+        missing++;
+      } else {
+        const exp = it.type === 'int32' ? (it.value >>> 0) : it.value;
+        const act = it.type === 'int32' ? (actual >>> 0) : actual;
+        if (exp === act) matched++;
+        else mismatched++;
+      }
+    }
+    return { total: byReg.size, matched, mismatched, missing };
+  }, [pitData, ugeSnap]);
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-3">
@@ -305,7 +384,7 @@ export const PitModal: React.FC<PitModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            disabled={writing}
+            disabled={writing || reading}
             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-40"
           >
             <X className="w-5 h-5" />
@@ -341,11 +420,20 @@ export const PitModal: React.FC<PitModalProps> = ({
             />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={!bridgeAlive || !bridgeHasPit || parsing || writing}
+              disabled={!bridgeAlive || !bridgeHasPit || parsing || writing || reading}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors"
             >
               <Upload className="w-4 h-4" />
               {parsing ? 'PROCESSANDO PIT...' : pitData ? 'CARREGAR OUTRO PIT' : 'SELECIONAR ARQUIVO PIT'}
+            </button>
+            <button
+              onClick={handleReadFromUge}
+              disabled={!canRead}
+              title="Ler todos os parâmetros, sensores, alarmes, entradas digitais e relés diretamente da UGE via CAN"
+              className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors"
+            >
+              <DownloadCloud className={`w-4 h-4 ${reading ? 'animate-bounce' : ''}`} />
+              {reading ? `LENDO UGE (${readProgress.current}/${readProgress.total})...` : ugeSnap ? 'ATUALIZAR LEITURA UGE' : 'LER DA UGE'}
             </button>
             {pitData ? (
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
@@ -362,12 +450,50 @@ export const PitModal: React.FC<PitModalProps> = ({
                   NS: <strong className="text-emerald-400 font-mono">{pitData.pit.meta?.numero_serie || '—'}</strong>
                 </span>
               </div>
+            ) : ugeSnap ? (
+              <span className="text-xs text-cyan-300">
+                Leitura direta da UGE às <strong>{ugeSnap.timestamp}</strong> ({ugeSnap.regsRead}/{ugeSnap.regsTotal} registradores) — NS Equip: <strong className="font-mono">{ugeSnap.base.sn_equip ?? '—'}</strong>
+              </span>
             ) : (
               <span className="text-xs text-slate-400">
-                Aceita planilhas PIT da engenharia em <strong>.pdf</strong>, <strong>.xlsx</strong>, <strong>.csv</strong> ou <strong>.docx</strong>.
+                Carregue uma planilha PIT (.pdf, .xlsx, .csv, .docx) ou clique em <strong>LER DA UGE</strong> para inspecionar a placa.
               </span>
             )}
           </div>
+
+          {readError && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{readError}</span>
+            </div>
+          )}
+
+          {diffStats && (
+            <div className={`p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
+              diffStats.mismatched === 0 && diffStats.missing === 0
+                ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                : 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+            }`}>
+              <div className="flex items-center gap-2">
+                {diffStats.mismatched === 0 && diffStats.missing === 0 ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                )}
+                <span>
+                  <strong>Conferência PIT × UGE ({ugeSnap?.timestamp}):</strong>{' '}
+                  <strong className="text-emerald-400">{diffStats.matched}/{diffStats.total}</strong> iguais
+                  {diffStats.mismatched > 0 && (
+                    <> · <strong className="text-red-400">{diffStats.mismatched} divergente(s)</strong></>
+                  )}
+                  {diffStats.missing > 0 && (
+                    <> · <strong className="text-slate-400">{diffStats.missing} não lido(s)</strong></>
+                  )}
+                </span>
+              </div>
+              <span className="text-[10px] text-slate-400">Veja os detalhes em cada aba ou em "Plano CAN".</span>
+            </div>
+          )}
 
           {parseError && (
             <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/40 text-red-300 text-xs flex items-center gap-2">
@@ -376,11 +502,11 @@ export const PitModal: React.FC<PitModalProps> = ({
             </div>
           )}
 
-          {/* CONFERENCIA DO PIT */}
-          {pitData && (
+          {/* CONFERENCIA DO PIT / LEITURA DA UGE */}
+          {hasContent && (
             <>
               {/* ALERTAS DE VALIDACAO */}
-              {pitData.warnings.length > 0 && (
+              {pitData && pitData.warnings.length > 0 && (
                 <div className="space-y-1.5">
                   {pitData.warnings.map((w, idx) => (
                     <div
@@ -412,12 +538,12 @@ export const PitModal: React.FC<PitModalProps> = ({
               {/* ABAS DE CONFERENCIA */}
               <div className="flex flex-wrap gap-1.5 border-b border-slate-800 pb-2">
                 {[
-                  { id: 'base', label: `2. Base (${pitData.summary.phase1_writes} CAN)` },
-                  { id: 'params', label: `6.1 Parâmetros (${pitData.summary.params_parsed}/19)` },
-                  { id: 'alarms', label: `6.2 Alarmes (${pitData.summary.alarms_parsed}/27)` },
-                  { id: 'din', label: `6.3 Entradas Digitais (${pitData.summary.din_parsed}/8)` },
-                  { id: 'relays', label: `6.4 Relés Status (${pitData.summary.status_relays_parsed}/22)` },
-                  { id: 'can', label: `Plano CAN (${pitData.summary.phase1_writes + 1 + pitData.summary.phase2_writes})` },
+                  { id: 'base', label: `2. Base & Sensores${pitData ? ` (${pitData.summary.phase1_writes} CAN)` : ''}` },
+                  { id: 'params', label: `6.1 Parâmetros (${pitData ? pitData.summary.params_parsed : Object.keys(ugeSnap?.parametros || {}).length}/19)` },
+                  { id: 'alarms', label: `6.2 Alarmes (${pitData ? pitData.summary.alarms_parsed : Object.keys(ugeSnap?.alarmes || {}).length}/27)` },
+                  { id: 'din', label: `6.3 Entradas Digitais (${pitData ? pitData.summary.din_parsed : Object.keys(ugeSnap?.entradas_digitais || {}).length}/8)` },
+                  { id: 'relays', label: `6.4 Relés Status (${pitData ? pitData.summary.status_relays_parsed : Object.keys(ugeSnap?.saidas_rele || {}).length}/22)` },
+                  ...(pitData ? [{ id: 'can', label: `Plano CAN (${pitData.summary.phase1_writes + 1 + pitData.summary.phase2_writes})` }] : []),
                 ].map(tab => (
                   <button
                     key={tab.id}
@@ -439,42 +565,94 @@ export const PitModal: React.FC<PitModalProps> = ({
               </div>
 
               {/* CONTEUDO DA ABA */}
-              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3 max-h-[340px] overflow-auto">
+              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3 max-h-[380px] overflow-auto">
                 {activeTab === 'base' && (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                    {[
-                      { k: 'vcc_nom', label: 'Tensão CC Nom. (V)', reg: 161 },
-                      { k: 'icc_nom', label: 'Corrente CC Nom. (A)', reg: 163 },
-                      { k: 'vcc_max_pct', label: 'Tensão CC Máx. (%)', reg: 162 },
-                      { k: 'icc_max_pct', label: 'Corrente CC Máx. (%)', reg: 164 },
-                      { k: 'ur_vcc_eme', label: 'Tensão Emerg. UR (V)', reg: 169 },
-                      { k: 'ur_quantidade', label: 'Nº Módulos UR', reg: 170 },
-                      { k: 'vca_nom', label: 'Tensão CA Nom. (V)', reg: 165 },
-                      { k: 'ur_sistema', label: 'Sistema CA', reg: 171 },
-                      { k: 'sensor_ica_tc_a', label: 'TC Entrada CA (A)', reg: 214 },
-                      { k: 'sensor_iret_shunt_a', label: 'Shunt I Ret. (A)', reg: 211 },
-                      { k: 'sensor_ibat_shunt_a', label: 'Shunt I Bat. (A)', reg: 212 },
-                      { k: 'sn_equip', label: 'Nº Série Equip.', reg: 160 },
-                    ].map(f => (
-                      <div key={f.k} className="bg-slate-900 border border-slate-800 rounded-lg p-2">
-                        <div className="flex justify-between text-[10px] text-slate-400 mb-1">
-                          <span>{f.label}</span>
-                          <span className="font-mono text-blue-400">REG {f.reg}</span>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                      {[
+                        { k: 'vcc_nom', label: 'Tensão CC Nom. (V)', reg: 161 },
+                        { k: 'icc_nom', label: 'Corrente CC Nom. (A)', reg: 163 },
+                        { k: 'vcc_max_pct', label: 'Tensão CC Máx. (%)', reg: 162 },
+                        { k: 'icc_max_pct', label: 'Corrente CC Máx. (%)', reg: 164 },
+                        { k: 'ur_vcc_eme', label: 'Tensão Emerg. UR (V)', reg: 169 },
+                        { k: 'ur_quantidade', label: 'Nº Módulos UR', reg: 170 },
+                        { k: 'vca_nom', label: 'Tensão CA Nom. (V)', reg: 165 },
+                        { k: 'ur_sistema', label: 'Sistema CA', reg: 171 },
+                        { k: 'udq_diodos', label: 'Nº Diodos UDQ', reg: 181 },
+                        { k: 'udq_diodo_bloqueio', label: 'D. Bloqueio UDQ', reg: 182 },
+                        { k: 'sensor_ica_tc_a', label: 'TC Entrada CA (A)', reg: 214 },
+                        { k: 'sensor_ica_espiras', label: 'Espiras TC CA', reg: 214 },
+                        { k: 'sensor_iret_shunt_a', label: 'Shunt I Ret. (A)', reg: 211 },
+                        { k: 'sensor_ibat_shunt_a', label: 'Shunt I Bat. (A)', reg: 212 },
+                        { k: 'sn_equip', label: 'Nº Série Equip.', reg: 160 },
+                      ].map(f => {
+                        const pitVal = pitData?.pit.base?.[f.k];
+                        const ugeVal = ugeSnap?.base?.[f.k];
+                        const hasBoth = Boolean(pitData && ugeSnap);
+                        const match = hasBoth && String(pitVal ?? '---') === String(ugeVal ?? '---');
+                        return (
+                          <div
+                            key={f.k}
+                            className={`bg-slate-900 border rounded-lg p-2 ${
+                              hasBoth ? (match ? 'border-emerald-500/40' : 'border-red-500/50') : 'border-slate-800'
+                            }`}
+                          >
+                            <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                              <span>{f.label}</span>
+                              <span className="font-mono text-blue-400">REG {f.reg}</span>
+                            </div>
+                            {pitData ? (
+                              <input
+                                type="text"
+                                defaultValue={pitVal ?? '---'}
+                                key={`${f.k}-${pitVal}`}
+                                disabled={writing}
+                                onBlur={e => {
+                                  if (String(pitVal ?? '') !== e.target.value.trim()) {
+                                    updateBaseField(f.k, e.target.value);
+                                  }
+                                }}
+                                className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-100 font-mono text-xs focus:border-blue-500 outline-none"
+                              />
+                            ) : (
+                              <div className="px-2 py-1 rounded bg-slate-950 border border-slate-800 text-cyan-300 font-mono text-xs">
+                                {ugeVal ?? '---'}
+                              </div>
+                            )}
+                            {pitData && ugeSnap && (
+                              <div className={`mt-1 text-[10px] font-mono flex justify-between ${match ? 'text-emerald-400' : 'text-red-400 font-bold'}`}>
+                                <span>UGE:</span>
+                                <span>{ugeVal ?? '---'}</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {ugeSnap && (
+                      <div className="border-t border-slate-800 pt-3">
+                        <div className="text-[11px] font-bold text-cyan-400 mb-2 uppercase tracking-wide">
+                          Sensores Lidos da UGE (192–198 Internos · 211–214 Externos)
                         </div>
-                        <input
-                          type="text"
-                          defaultValue={pitData.pit.base?.[f.k] ?? ''}
-                          key={`${f.k}-${pitData.pit.base?.[f.k]}`}
-                          disabled={writing}
-                          onBlur={e => {
-                            if (String(pitData.pit.base?.[f.k] ?? '') !== e.target.value.trim()) {
-                              updateBaseField(f.k, e.target.value);
-                            }
-                          }}
-                          className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-100 font-mono text-xs focus:border-blue-500 outline-none"
-                        />
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                          {ugeSnap.sensores.map(s => (
+                            <div key={s.reg} className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 flex items-center justify-between gap-2">
+                              <div>
+                                <div className="text-[10px] text-slate-400">{s.nome}</div>
+                                <div className={`font-mono font-bold ${s.valor.includes('EMPTY') ? 'text-red-400' : 'text-cyan-300'}`}>
+                                  {s.valor}
+                                </div>
+                              </div>
+                              <div className="text-right font-mono text-[10px] text-slate-500">
+                                <div>REG {s.reg}</div>
+                                <div>{s.rawHex}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    ))}
+                    )}
                   </div>
                 )}
 
@@ -484,38 +662,54 @@ export const PitModal: React.FC<PitModalProps> = ({
                       <tr>
                         <th className="py-1.5 px-2">Cód</th>
                         <th className="py-1.5 px-2">Descrição</th>
-                        <th className="py-1.5 px-2">Ajuste (editável)</th>
+                        {pitData && <th className="py-1.5 px-2">PIT (editável)</th>}
+                        {ugeSnap && <th className="py-1.5 px-2 text-cyan-400">Lido da UGE</th>}
                         <th className="py-1.5 px-2">Unid.</th>
-                        <th className="py-1.5 px-2">Faixa 4.1</th>
+                        {pitData && <th className="py-1.5 px-2">Faixa 4.1</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
-                      {Object.entries(pitData.pit.parametros).map(([code, p]: [string, any]) => {
-                        const lim = pitData.pit.limites_parametros?.[code];
+                      {Object.entries(pitData ? pitData.pit.parametros : (ugeSnap?.parametros || {})).map(([code, p]: [string, any]) => {
+                        const lim = pitData?.pit.limites_parametros?.[code];
+                        const ugeP = ugeSnap?.parametros?.[code];
                         const outOfRange =
+                          pitData &&
                           p.valor !== null &&
                           lim &&
                           ((lim.min !== null && p.valor < lim.min) || (lim.max !== null && p.valor > lim.max));
+                        const hasBoth = Boolean(pitData && ugeP && p.valor !== null);
+                        const diff = hasBoth && (ugeP!.valor === null || Math.abs(ugeP!.valor - p.valor) > 0.055);
                         return (
-                          <tr key={code} className={outOfRange ? 'bg-red-500/10' : ''}>
+                          <tr key={code} className={outOfRange || diff ? 'bg-red-500/10' : ''}>
                             <td className="py-1.5 px-2 font-mono font-bold text-blue-300">{code}</td>
                             <td className="py-1.5 px-2 text-slate-300">{p.descricao}</td>
-                            <td className="py-1.5 px-2">
-                              <input
-                                type="text"
-                                defaultValue={p.valor !== null ? String(p.valor) : '-'}
-                                key={`${code}-${p.valor}`}
-                                disabled={writing}
-                                onBlur={e => updateParamValue(code, e.target.value)}
-                                className={`w-24 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none ${
-                                  outOfRange ? 'border-red-500 text-red-300' : 'border-slate-700 text-slate-100'
-                                }`}
-                              />
-                            </td>
+                            {pitData && (
+                              <td className="py-1.5 px-2">
+                                <input
+                                  type="text"
+                                  defaultValue={p.valor !== null ? String(p.valor) : '-'}
+                                  key={`${code}-${p.valor}`}
+                                  disabled={writing}
+                                  onBlur={e => updateParamValue(code, e.target.value)}
+                                  className={`w-24 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none ${
+                                    outOfRange ? 'border-red-500 text-red-300' : 'border-slate-700 text-slate-100'
+                                  }`}
+                                />
+                              </td>
+                            )}
+                            {ugeSnap && (
+                              <td className={`py-1.5 px-2 font-mono font-bold ${
+                                !hasBoth ? 'text-cyan-300' : diff ? 'text-red-400' : 'text-emerald-400'
+                              }`}>
+                                {ugeP?.valor !== null && ugeP?.valor !== undefined ? String(ugeP.valor) : '---'}
+                              </td>
+                            )}
                             <td className="py-1.5 px-2 text-slate-400">{p.unidade}</td>
-                            <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">
-                              {lim ? `${lim.min ?? '—'} .. ${lim.max ?? '—'}` : '—'}
-                            </td>
+                            {pitData && (
+                              <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">
+                                {lim ? `${lim.min ?? '—'} .. ${lim.max ?? '—'}` : '—'}
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
@@ -529,43 +723,78 @@ export const PitModal: React.FC<PitModalProps> = ({
                       <tr>
                         <th className="py-1.5 px-2">Cód</th>
                         <th className="py-1.5 px-2">Descrição</th>
-                        <th className="py-1.5 px-2">Valor (editável)</th>
-                        <th className="py-1.5 px-2">Faixa 4.2</th>
-                        <th className="py-1.5 px-2">Ação</th>
-                        <th className="py-1.5 px-2">Retardo</th>
-                        <th className="py-1.5 px-2">Relés</th>
+                        {pitData && <th className="py-1.5 px-2">PIT Valor</th>}
+                        {ugeSnap && <th className="py-1.5 px-2 text-cyan-400">UGE Valor</th>}
+                        {pitData && <th className="py-1.5 px-2">Faixa 4.2</th>}
+                        <th className="py-1.5 px-2">Ação {ugeSnap && pitData ? '(PIT / UGE)' : ''}</th>
+                        <th className="py-1.5 px-2">Retardo {ugeSnap && pitData ? '(PIT / UGE)' : ''}</th>
+                        <th className="py-1.5 px-2">Relés {ugeSnap && pitData ? '(PIT / UGE)' : ''}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
-                      {Object.entries(pitData.pit.alarmes).map(([code, al]: [string, any]) => {
-                        const lim = pitData.pit.limites_alarmes?.[code];
+                      {Object.entries(pitData ? pitData.pit.alarmes : (ugeSnap?.alarmes || {})).map(([code, al]: [string, any]) => {
+                        const lim = pitData?.pit.limites_alarmes?.[code];
+                        const ugeAl = ugeSnap?.alarmes?.[code];
                         const outOfRange =
+                          pitData &&
                           al.valor !== null &&
                           lim &&
                           ((lim.min !== null && al.valor < lim.min) || (lim.max !== null && al.valor > lim.max));
+                        const valDiff = Boolean(pitData && ugeAl && al.valor !== null && (ugeAl.valor === null || Math.abs(ugeAl.valor - al.valor) > 0.055));
+                        const pitRel = formatReles(al.reles);
+                        const ugeRel = ugeAl ? formatReles(ugeAl.reles) : '—';
+                        const relDiff = Boolean(pitData && ugeAl && code !== 'AL09' && pitRel !== ugeRel);
                         return (
-                          <tr key={code} className={outOfRange ? 'bg-red-500/15' : ''}>
+                          <tr key={code} className={outOfRange || valDiff || relDiff ? 'bg-red-500/10' : ''}>
                             <td className="py-1.5 px-2 font-mono font-bold text-amber-300">{code}</td>
                             <td className="py-1.5 px-2 text-slate-300">{al.descricao}</td>
-                            <td className="py-1.5 px-2">
-                              <input
-                                type="text"
-                                defaultValue={al.valor !== null ? String(al.valor) : 'N/A'}
-                                key={`${code}-${al.valor}`}
-                                disabled={writing || al.valor === null}
-                                onBlur={e => updateAlarmValue(code, e.target.value)}
-                                className={`w-24 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none disabled:opacity-50 ${
-                                  outOfRange ? 'border-red-500 text-red-300 font-bold' : 'border-slate-700 text-slate-100'
-                                }`}
-                              />{' '}
-                              <span className="text-[10px] text-slate-500">{al.unidade}</span>
+                            {pitData && (
+                              <td className="py-1.5 px-2">
+                                <input
+                                  type="text"
+                                  defaultValue={al.valor !== null ? String(al.valor) : 'N/A'}
+                                  key={`${code}-${al.valor}`}
+                                  disabled={writing || al.valor === null}
+                                  onBlur={e => updateAlarmValue(code, e.target.value)}
+                                  className={`w-20 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none disabled:opacity-50 ${
+                                    outOfRange ? 'border-red-500 text-red-300 font-bold' : 'border-slate-700 text-slate-100'
+                                  }`}
+                                />{' '}
+                                <span className="text-[10px] text-slate-500">{al.unidade}</span>
+                              </td>
+                            )}
+                            {ugeSnap && (
+                              <td className={`py-1.5 px-2 font-mono font-bold ${valDiff ? 'text-red-400' : 'text-cyan-300'}`}>
+                                {ugeAl?.valor !== null && ugeAl?.valor !== undefined ? `${ugeAl.valor} ${ugeAl.unidade}` : 'N/A'}
+                              </td>
+                            )}
+                            {pitData && (
+                              <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">
+                                {lim && lim.min !== null ? `${lim.min} .. ${lim.max}` : '—'}
+                              </td>
+                            )}
+                            <td className="py-1.5 px-2 font-mono text-[11px] text-slate-300">
+                              {pitData ? al.acao : ugeAl?.acao}
+                              {pitData && ugeAl && ugeAl.acao !== '—' && (
+                                <span className={`ml-1 ${ugeAl.acao === al.acao ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                  ({ugeAl.acao})
+                                </span>
+                              )}
                             </td>
                             <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">
-                              {lim && lim.min !== null ? `${lim.min} .. ${lim.max}` : '—'}
+                              {pitData ? (al.retardo_raw || '—') : ugeAl?.retardo_raw}
+                              {pitData && ugeAl && ugeAl.retardo_raw !== '—' && (
+                                <span className="ml-1 text-cyan-400">({ugeAl.retardo_raw})</span>
+                              )}
                             </td>
-                            <td className="py-1.5 px-2 font-mono text-[11px] text-slate-300">{al.acao}</td>
-                            <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">{al.retardo_raw || '—'}</td>
-                            <td className="py-1.5 px-2 font-mono text-[11px] text-emerald-400">{formatReles(al.reles)}</td>
+                            <td className="py-1.5 px-2 font-mono text-[11px]">
+                              <span className="text-emerald-400">{pitData ? pitRel : ugeRel}</span>
+                              {pitData && ugeAl && (
+                                <span className={`ml-1 ${relDiff ? 'text-red-400 font-bold' : 'text-cyan-400'}`}>
+                                  ({ugeRel})
+                                </span>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
@@ -574,32 +803,52 @@ export const PitModal: React.FC<PitModalProps> = ({
                 )}
 
                 {activeTab === 'din' && (
-                  <table className="w-full text-xs text-left border-collapse">
-                    <thead className="text-[10px] uppercase text-slate-400 border-b border-slate-800">
-                      <tr>
-                        <th className="py-1.5 px-2">Entrada</th>
-                        <th className="py-1.5 px-2">Descrição</th>
-                        <th className="py-1.5 px-2">Tipo</th>
-                        <th className="py-1.5 px-2">Sinótico</th>
-                        <th className="py-1.5 px-2">Retardo</th>
-                        <th className="py-1.5 px-2">Ação / Comando</th>
-                        <th className="py-1.5 px-2">Relés</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60">
-                      {Object.entries(pitData.pit.entradas_digitais).map(([code, d]: [string, any]) => (
-                        <tr key={code} className={d.tipo === 'DESL' ? 'opacity-50' : ''}>
-                          <td className="py-1.5 px-2 font-mono font-bold text-cyan-300">{code}</td>
-                          <td className="py-1.5 px-2 text-slate-200">{d.descricao}</td>
-                          <td className="py-1.5 px-2 font-mono">{d.tipo}</td>
-                          <td className="py-1.5 px-2 font-mono">{d.sinotico}</td>
-                          <td className="py-1.5 px-2 font-mono">{d.retardo_s ?? 0}s</td>
-                          <td className="py-1.5 px-2 font-mono">{d.acao} / {d.comando}</td>
-                          <td className="py-1.5 px-2 font-mono text-emerald-400">{formatReles(d.reles)}</td>
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-slate-400 bg-slate-900/70 border border-slate-800 rounded-lg px-2.5 py-1.5">
+                      Nota: a descrição textual das entradas digitais (ex.: <em>FUGA NEGATIVA</em>) é armazenada apenas na IHM; a UGE armazena Tipo, Sinótico, Retardo, Ação, Comando e Relés.
+                    </div>
+                    <table className="w-full text-xs text-left border-collapse">
+                      <thead className="text-[10px] uppercase text-slate-400 border-b border-slate-800">
+                        <tr>
+                          <th className="py-1.5 px-2">Entrada</th>
+                          <th className="py-1.5 px-2">Descrição</th>
+                          <th className="py-1.5 px-2">Tipo</th>
+                          <th className="py-1.5 px-2">Sinótico</th>
+                          <th className="py-1.5 px-2">Retardo</th>
+                          <th className="py-1.5 px-2">Ação / Comando</th>
+                          <th className="py-1.5 px-2">Relés</th>
+                          {pitData && ugeSnap && <th className="py-1.5 px-2 text-cyan-400">Lido da UGE</th>}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {Object.entries(pitData ? pitData.pit.entradas_digitais : (ugeSnap?.entradas_digitais || {})).map(([code, d]: [string, any]) => {
+                          const ugeD = ugeSnap?.entradas_digitais?.[code];
+                          const pitRel = formatReles(d.reles);
+                          const ugeRel = ugeD ? formatReles(ugeD.reles) : '—';
+                          const dinDiff = Boolean(
+                            pitData && ugeD &&
+                            (ugeD.tipo !== d.tipo || ugeD.sinotico !== d.sinotico || ugeD.acao !== d.acao || ugeD.comando !== d.comando || ugeRel !== pitRel)
+                          );
+                          return (
+                            <tr key={code} className={`${d.tipo === 'DESL' && !dinDiff ? 'opacity-60' : ''} ${dinDiff ? 'bg-red-500/10' : ''}`}>
+                              <td className="py-1.5 px-2 font-mono font-bold text-cyan-300">{code}</td>
+                              <td className="py-1.5 px-2 text-slate-200">{d.descricao}</td>
+                              <td className="py-1.5 px-2 font-mono">{d.tipo}</td>
+                              <td className="py-1.5 px-2 font-mono">{d.sinotico}</td>
+                              <td className="py-1.5 px-2 font-mono">{pitData ? `${d.retardo_s ?? 0}s` : d.retardo_raw}</td>
+                              <td className="py-1.5 px-2 font-mono">{d.acao} / {d.comando}</td>
+                              <td className="py-1.5 px-2 font-mono text-emerald-400">{pitRel}</td>
+                              {pitData && ugeD && (
+                                <td className={`py-1.5 px-2 font-mono text-[11px] ${dinDiff ? 'text-red-400 font-bold' : 'text-emerald-400'}`}>
+                                  {ugeD.tipo} · {ugeD.sinotico} · {ugeD.retardo_raw} · {ugeD.acao}/{ugeD.comando} · {ugeRel}
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
 
                 {activeTab === 'relays' && (
@@ -608,17 +857,26 @@ export const PitModal: React.FC<PitModalProps> = ({
                       <tr>
                         <th className="py-1.5 px-2">Status</th>
                         <th className="py-1.5 px-2">Descrição</th>
-                        <th className="py-1.5 px-2">Relés Mapeados</th>
+                        <th className="py-1.5 px-2">{pitData ? 'Relés PIT' : 'Relés UGE'}</th>
+                        {pitData && ugeSnap && <th className="py-1.5 px-2 text-cyan-400">Lido da UGE</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
-                      {Object.entries(pitData.pit.saidas_rele).map(([code, st]: [string, any]) => {
+                      {Object.entries(pitData ? pitData.pit.saidas_rele : (ugeSnap?.saidas_rele || {})).map(([code, st]: [string, any]) => {
                         const rel = formatReles(st.reles);
+                        const ugeSt = ugeSnap?.saidas_rele?.[code];
+                        const ugeRel = ugeSt ? formatReles(ugeSt.reles) : '—';
+                        const diff = Boolean(pitData && ugeSt && rel !== ugeRel);
                         return (
-                          <tr key={code} className={rel === '—' ? 'opacity-45' : ''}>
+                          <tr key={code} className={`${rel === '—' && ugeRel === '—' ? 'opacity-45' : ''} ${diff ? 'bg-red-500/10' : ''}`}>
                             <td className="py-1.5 px-2 font-mono font-bold text-slate-300">{code}</td>
                             <td className="py-1.5 px-2 text-slate-200">{st.descricao}</td>
                             <td className="py-1.5 px-2 font-mono text-emerald-400">{rel}</td>
+                            {pitData && ugeSnap && (
+                              <td className={`py-1.5 px-2 font-mono ${diff ? 'text-red-400 font-bold' : 'text-cyan-300'}`}>
+                                {ugeRel}
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
@@ -626,35 +884,67 @@ export const PitModal: React.FC<PitModalProps> = ({
                   </table>
                 )}
 
-                {activeTab === 'can' && (
+                {activeTab === 'can' && pitData && (
                   <div className="space-y-3 text-xs font-mono">
                     <div>
                       <div className="text-blue-400 font-bold mb-1">
                         FASE 1 — Parâmetros Base e Sensores ({pitData.can_plan.phase1_base.length} writes)
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
-                        {pitData.can_plan.phase1_base.map((w, i) => (
-                          <div key={i} className="px-2 py-1 bg-slate-900 rounded border border-slate-800 flex justify-between">
-                            <span>REG {w.reg} ({w.name})</span>
-                            <span className="text-emerald-400">{w.value} [{w.type}]</span>
-                          </div>
-                        ))}
+                        {pitData.can_plan.phase1_base.map((w, i) => {
+                          const actual = ugeSnap?.raw[w.reg];
+                          const match = actual !== undefined && (w.type === 'int32' ? (w.value >>> 0) === (actual >>> 0) : w.value === actual);
+                          return (
+                            <div
+                              key={i}
+                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${
+                                ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
+                              }`}
+                            >
+                              <span>REG {w.reg} ({w.name})</span>
+                              <span className="text-right">
+                                <span className="text-emerald-400">{w.value}</span>
+                                {ugeSnap && (
+                                  <span className={`ml-2 ${actual === undefined ? 'text-slate-500' : match ? 'text-cyan-400' : 'text-red-400 font-bold'}`}>
+                                    [UGE: {actual ?? '?'}]
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                     <div className="px-2 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded text-amber-300">
-                      REBOOT — REG {pitData.can_plan.reboot_cmd.reg} ({pitData.can_plan.reboot_cmd.name}) = {pitData.can_plan.reboot_cmd.value} (RBT_Normal) + aguarda 4s
+                      REBOOT — REG {pitData.can_plan.reboot_cmd.reg} ({pitData.can_plan.reboot_cmd.name}) = {pitData.can_plan.reboot_cmd.value} (RBT_Normal) + aguarda 5,5s
                     </div>
                     <div>
                       <div className="text-blue-400 font-bold mb-1">
                         FASE 2 — Usuário, Alarmes, Entradas Digitais e Relés ({pitData.can_plan.phase2_user.length} writes)
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
-                        {pitData.can_plan.phase2_user.map((w, i) => (
-                          <div key={i} className="px-2 py-1 bg-slate-900 rounded border border-slate-800 flex justify-between">
-                            <span>REG {w.reg} ({w.name})</span>
-                            <span className="text-emerald-400">{w.value} [{w.type}]</span>
-                          </div>
-                        ))}
+                        {pitData.can_plan.phase2_user.map((w, i) => {
+                          const actual = ugeSnap?.raw[w.reg];
+                          const match = actual !== undefined && (w.type === 'int32' ? (w.value >>> 0) === (actual >>> 0) : w.value === actual);
+                          return (
+                            <div
+                              key={i}
+                              className={`px-2 py-1 bg-slate-900 rounded border flex justify-between gap-2 ${
+                                ugeSnap ? (actual === undefined ? 'border-slate-700' : match ? 'border-emerald-500/40' : 'border-red-500/60') : 'border-slate-800'
+                              }`}
+                            >
+                              <span>REG {w.reg} ({w.name})</span>
+                              <span className="text-right">
+                                <span className="text-emerald-400">{w.value}</span>
+                                {ugeSnap && (
+                                  <span className={`ml-2 ${actual === undefined ? 'text-slate-500' : match ? 'text-cyan-400' : 'text-red-400 font-bold'}`}>
+                                    [UGE: {actual ?? '?'}]
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
@@ -716,7 +1006,7 @@ export const PitModal: React.FC<PitModalProps> = ({
             )}
           </div>
           <div className="flex items-center gap-2">
-            {writing ? (
+            {writing || reading ? (
               <button
                 onClick={() => { cancelRef.current = true; }}
                 className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg flex items-center gap-1.5"

@@ -184,6 +184,51 @@ static esp_err_t ws_handler(httpd_req_t *req) {
                                             "Escrita inválida, operação em andamento ou falha de envio.");
 
           }
+          // 2B. LEITURA CAN SOB DEMANDA (para conferência de PIT / diagnóstico de registradores)
+          else if (strcmp(cmd->valuestring, "read_reg") == 0) {
+            cJSON *reg = cJSON_GetObjectItem(root, "reg");
+            cJSON *fmt = cJSON_GetObjectItem(root, "format");
+            cJSON *qtd_item = cJSON_GetObjectItem(root, "qtd");
+            int qtd = (cJSON_IsNumber(qtd_item) && isfinite(qtd_item->valuedouble)) ? qtd_item->valueint : 1;
+            int fmt_val = (cJSON_IsNumber(fmt) && isfinite(fmt->valuedouble)) ? fmt->valueint : -1;
+            int max_qtd = (fmt_val == 4) ? 2 : 4;
+            bool valid = cJSON_IsNumber(reg) && isfinite(reg->valuedouble) &&
+                         reg->valuedouble >= 0 && reg->valuedouble <= 1023 &&
+                         trunc(reg->valuedouble) == reg->valuedouble &&
+                         (fmt_val == 2 || fmt_val == 4) &&
+                         qtd >= 1 && qtd <= max_qtd;
+            uint32_t vals[4] = {0};
+            bool ok = valid && g_ihm_state.flags.uge_link_ok &&
+                      device_operations_read_reg((uint16_t)reg->valueint, (uint8_t)fmt_val, (uint8_t)qtd, vals, 350);
+            cJSON *reply = cJSON_CreateObject();
+            if (reply) {
+              cJSON_AddStringToObject(reply, "type", "command_result");
+              cJSON *id = cJSON_GetObjectItem(root, "request_id");
+              if (cJSON_IsString(id)) cJSON_AddStringToObject(reply, "request_id", id->valuestring);
+              cJSON_AddStringToObject(reply, "command", "read_reg");
+              cJSON_AddBoolToObject(reply, "success", ok);
+              cJSON_AddNumberToObject(reply, "reg", valid ? reg->valueint : -1);
+              cJSON_AddNumberToObject(reply, "format", fmt_val);
+              cJSON *arr = cJSON_AddArrayToObject(reply, "values");
+              if (ok && arr) {
+                for (int i = 0; i < qtd; i++) {
+                  if (fmt_val == 2)
+                    cJSON_AddItemToArray(arr, cJSON_CreateNumber((double)(int32_t)vals[i]));
+                  else
+                    cJSON_AddItemToArray(arr, cJSON_CreateNumber((double)vals[i]));
+                }
+              }
+              cJSON_AddStringToObject(reply, "message", ok ? "Leitura CAN concluída." :
+                                                             "Falha ou timeout na leitura CAN do registrador.");
+              char *json = cJSON_PrintUnformatted(reply);
+              if (json) {
+                httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)json, .len = strlen(json)};
+                httpd_ws_send_frame(req, &frame);
+                free(json);
+              }
+              cJSON_Delete(reply);
+            }
+          }
           // 3. PERSISTÊNCIA NA CPU (FLASH)
           else if (strcmp(cmd->valuestring, "write_cpu") == 0) {
             // ihm_state_save_to_nvs();

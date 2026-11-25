@@ -21,6 +21,7 @@ bool relay_start(void);
 void relay_cancel(void);
 bool relay_busy(void);
 bool device_operations_manual_write(uint16_t reg, uint8_t format, double value);
+bool device_operations_read_reg(uint16_t reg, uint8_t format, uint8_t qtd, uint32_t *out_values, uint32_t timeout_ms);
 void device_operations_tick(uint32_t now);
 void device_operations_on_read(uint16_t reg, uint32_t value);
 void device_operations_snapshot(serial_status_t *serial, relay_status_t *relay);
