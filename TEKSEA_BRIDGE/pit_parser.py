@@ -1140,13 +1140,14 @@ def build_can_writes(pit: Dict[str, Any]) -> Dict[str, Any]:
         # No TPS125, _MAP_Sens_Int_Update aceita somente tipo=1 (SAD_ShuntIso60mV) para REG_SInt_Iret (195)
         add(phase1, 195, "REG_SInt_Iret", "int32", _pack_sensor_int(1, 0x8000), "2.5")
     if base.get("sensor_iret_shunt_a") is not None:
-        add(phase1, 211, "REG_SExt_Iret", "int32", _pack_sensor_ext(0, round(base["sensor_iret_shunt_a"] * 10), 0), "2.5")
+        # Shunt externo nao usa valor2 (espiras); a UGE armazena valor2 = 0x80 (EMPTY)
+        add(phase1, 211, "REG_SExt_Iret", "int32", _pack_sensor_ext(0, round(base["sensor_iret_shunt_a"] * 10), 0x80), "2.5")
 
     if base.get("sensor_ibat_tipo"):
         t_ibat = 2 if "DIF" in _norm(base["sensor_ibat_tipo"]) else 1
         add(phase1, 196, "REG_SInt_Ibat", "int32", _pack_sensor_int(t_ibat, 0x8000), "2.6")
     if base.get("sensor_ibat_shunt_a") is not None:
-        add(phase1, 212, "REG_SExt_Ibat", "int32", _pack_sensor_ext(0, round(base["sensor_ibat_shunt_a"] * 10), 0), "2.6")
+        add(phase1, 212, "REG_SExt_Ibat", "int32", _pack_sensor_ext(0, round(base["sensor_ibat_shunt_a"] * 10), 0x80), "2.6")
 
     if base.get("sensor_ica_tipo"):
         # _MAP_Sens_Int_Update aceita somente tipo=1 (SAA_TC5A) para REG_SInt_Ica (198)
