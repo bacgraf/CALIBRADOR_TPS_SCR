@@ -366,7 +366,7 @@ export const PitModal: React.FC<PitModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-3">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden">
+      <div className="bg-slate-900 text-slate-200 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden">
         {/* HEADER */}
         <div className="px-5 py-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -812,10 +812,11 @@ export const PitModal: React.FC<PitModalProps> = ({
                         <tr>
                           <th className="py-1.5 px-2">Entrada</th>
                           <th className="py-1.5 px-2">Descrição</th>
-                          <th className="py-1.5 px-2">Tipo</th>
                           <th className="py-1.5 px-2">Sinótico</th>
+                          <th className="py-1.5 px-2">Tipo</th>
                           <th className="py-1.5 px-2">Retardo</th>
-                          <th className="py-1.5 px-2">Ação / Comando</th>
+                          <th className="py-1.5 px-2">Ação</th>
+                          <th className="py-1.5 px-2">Comando</th>
                           <th className="py-1.5 px-2">Relés</th>
                           {pitData && ugeSnap && <th className="py-1.5 px-2 text-cyan-400">Lido da UGE</th>}
                         </tr>
@@ -833,14 +834,15 @@ export const PitModal: React.FC<PitModalProps> = ({
                             <tr key={code} className={`${d.tipo === 'DESL' && !dinDiff ? 'opacity-60' : ''} ${dinDiff ? 'bg-red-500/10' : ''}`}>
                               <td className="py-1.5 px-2 font-mono font-bold text-cyan-300">{code}</td>
                               <td className="py-1.5 px-2 text-slate-200">{d.descricao}</td>
-                              <td className="py-1.5 px-2 font-mono">{d.tipo}</td>
-                              <td className="py-1.5 px-2 font-mono">{d.sinotico}</td>
-                              <td className="py-1.5 px-2 font-mono">{pitData ? `${d.retardo_s ?? 0}s` : d.retardo_raw}</td>
-                              <td className="py-1.5 px-2 font-mono">{d.acao} / {d.comando}</td>
+                              <td className="py-1.5 px-2 font-mono text-slate-100">{d.sinotico}</td>
+                              <td className="py-1.5 px-2 font-mono font-bold text-amber-300">{d.tipo}</td>
+                              <td className="py-1.5 px-2 font-mono text-slate-200">{pitData ? `${d.retardo_s ?? 0}s` : d.retardo_raw}</td>
+                              <td className="py-1.5 px-2 font-mono text-slate-100">{d.acao}</td>
+                              <td className="py-1.5 px-2 font-mono text-slate-200">{d.comando}</td>
                               <td className="py-1.5 px-2 font-mono text-emerald-400">{pitRel}</td>
                               {pitData && ugeD && (
                                 <td className={`py-1.5 px-2 font-mono text-[11px] ${dinDiff ? 'text-red-400 font-bold' : 'text-emerald-400'}`}>
-                                  {ugeD.tipo} · {ugeD.sinotico} · {ugeD.retardo_raw} · {ugeD.acao}/{ugeD.comando} · {ugeRel}
+                                  {ugeD.sinotico} · {ugeD.tipo} · {ugeD.retardo_raw} · {ugeD.acao} · {ugeD.comando} · {ugeRel}
                                 </td>
                               )}
                             </tr>
