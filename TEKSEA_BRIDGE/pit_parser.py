@@ -671,6 +671,10 @@ def parse_pit_rows(rows: List[List[str]]) -> Dict[str, Any]:
             section, subsection = "3", ""
             i += 1
             continue
+        if re.match(r"^3\.\s*7\b", nj) or "HORIMETRO" in nj:
+            section, subsection = "3", "3.7"
+            i += 1
+            continue
         if re.match(r"^4\.\s*1\b", nj):
             section, subsection = "4", "4.1"
             i += 1
@@ -817,6 +821,18 @@ def parse_pit_rows(rows: List[List[str]]) -> Dict[str, Any]:
             elif subsection == "2.9":
                 if "SERIE" in compact:
                     pit["base"]["sn_equip"] = _parse_int(last_val_before_unit())
+
+        # ---------------- SECAO 3.7: HORIMETRO ----------------
+        if subsection == "3.7":
+            vals = [v for _, v in ne]
+            if len(vals) >= 2:
+                k = _norm(vals[0])
+                if "HORAS" in k:
+                    v = _parse_int(vals[-1])
+                    pit["base"]["horimetro_horas"] = v if v is not None else 0
+                elif "CICLOS" in k:
+                    v = _parse_int(vals[-1])
+                    pit["base"]["horimetro_ciclos"] = v if v is not None else 0
 
         # ---------------- SECAO 4.1: LIMITES DE PARAMETROS ----------------
         if subsection == "4.1":
@@ -1062,7 +1078,13 @@ def build_can_writes(pit: Dict[str, Any]) -> Dict[str, Any]:
             "source": source,
         })
 
-    # ---------- FASE 1: SEC_Base + SEC_Sens_Int + SEC_Sens_Ext ----------
+    # ---------- FASE 1: Horimetro (3.7) + SEC_Base + SEC_Sens_Int + SEC_Sens_Ext ----------
+    # Zera (ou aplica valor do PIT) horas e ciclos no horimetro
+    horas_set = base.get("horimetro_horas")
+    ciclos_set = base.get("horimetro_ciclos")
+    add(phase1, 130, "REG_Horas_set", "int32", 0 if horas_set is None else horas_set, "3.7")
+    add(phase1, 131, "REG_Ciclos_set", "int16", 0 if ciclos_set is None else ciclos_set, "3.7")
+
     if base.get("sn_equip") is not None:
         add(phase1, 160, "REG_SN_Equip", "int32", base["sn_equip"], "2.9")
     if base.get("vcc_nom") is not None:

@@ -14,6 +14,10 @@ export const EMPTY_I16 = -32768;
 export const EMPTY_I32_U = 0x80000000;
 
 export const UGE_READ_BATCHES: ReadBatch[] = [
+  // Horimetro (130..131)
+  { reg: 130, format: 4, qtd: 1, label: 'Horas_set' },
+  { reg: 131, format: 2, qtd: 1, label: 'Ciclos_set' },
+
   // Base (160..182)
   { reg: 160, format: 4, qtd: 1, label: 'SN_Equip' },
   { reg: 161, format: 2, qtd: 4, label: 'Vcc/Icc nom/max' },
@@ -369,6 +373,8 @@ export function decodeUgeRegisters(raw: Record<number, number>, regsRead: number
   const sextIbat = raw[212];
 
   const base: Record<string, any> = {
+    horimetro_horas: r32(130, 1),
+    horimetro_ciclos: r16(131, 1),
     sn_equip: r32(160, 1),
     vcc_nom: r16(161, 0.1),
     vcc_max_pct: r16(162, 0.1), // pu x1000 -> % (ex: 1100 -> 110%)

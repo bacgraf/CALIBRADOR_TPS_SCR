@@ -1,6 +1,6 @@
 {
-  "version": "2.1.3",
+  "version": "2.1.4",
   "min_version": "2.1.0",
   "release_date": "2026-11-25",
-  "changelog": "Corrige tipo 1-based de sensores internos (195/196/198), escrita dupla de REG_SExt_Ica (214) para gravar TC+espiras sem [1-214] PARAM, REG_Vca_min/max/Freq_nom (166-168), REG_UDQ_diodos (181) EMPTY quando --- e teDinComando (17..21)."
+  "changelog": "Adiciona gravacao do Horimetro (REG_Horas_set=130 e REG_Ciclos_set=131, zerados por padrao conforme secao 3.7 do PIT)."
 }
