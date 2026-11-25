@@ -1,8 +1,8 @@
 # Mapa de Registradores CAN — UGE TPS125
 
-Este documento descreve todos os registradores disponíveis na comunicação CAN entre a UGE SR125 e a IHM.
+Este documento descreve todos os registradores disponíveis na comunicação CAN entre a UGE TPS125 e a IHM.
 
-> **Status:** Em construção
+> **Status:** Validado contra DWARF / COFF do compilador TI C2000 (`com.teksea.retificador125.uge-280225A-burnin.out`)
 
 ## Convenções
 
@@ -12,26 +12,29 @@ Este documento descreve todos os registradores disponíveis na comunicação CAN
 - **CMD** — Comando (escrita executa uma ação, sem valor armazenado)
 
 ### Escala (mult)
-Os valores numéricos transmitidos na rede são inteiros escalados. Para obter o valor real:
+Os valores numéricos transmitidos na rede são inteiros escalados em unidades SI. Para converter entre valor de rede e valor real (SI):
 
 ```
-valor_real = valor_rede × escala
+valor_real_SI = valor_rede × escala
+valor_rede    = round(valor_real_SI / escala)
 ```
 
 | Código | Escala (×) | Exemplo |
 |--------|-----------|---------|
 | un     | 1         | inteiro sem escala |
-| deci   | 0.1       | 1253 → 125.3 |
-| centi  | 0.01      | 9876 → 98.76 |
-| milli  | 0.001     | 1056 → 1.056 |
-| deca   | 10        | 125 → 1250 |
-| kilo   | 1000      | 3600 → 3.600.000 ms = 1h |
+| deci   | 0.1       | 1253 ↔ 125.3 V |
+| centi  | 0.01      | 9876 ↔ 98.76 |
+| milli  | 0.001     | 300 ↔ 0.300 V/°C |
+| micro* | 0.0001    | 150 ↔ +1.50% ganho |
+| deca   | 10        | 125 ↔ 1250 W |
+| kilo   | 1000      | 60 (s na rede) ↔ 60.000 ms na RAM |
 
-### Base PU
-Alguns registradores de grandezas físicas são transmitidos em **por unidade (pu)** relativo a uma base nominal. Para obter o valor em unidades SI:
+### Base PU (armazenamento interno na UGE)
+Registradores marcados com `BPU_*` são armazenados **internamente na RAM da UGE em por unidade (pu)** (`float`), mas **trafegam no barramento CAN já convertidos em unidades SI escaladas** (`V`, `A`, `Hz`, `V/°C`, `Ah`). A própria UGE multiplica/divide pela base nominal ao enviar/receber na CAN:
 
 ```
-valor_SI = valor_rede × escala × base_nominal
+valor_rede = round(valor_SI / escala)
+valor_pu_interno = (valor_rede × escala) / base_nominal
 ```
 
 | Base     | Grandeza         |
@@ -62,7 +65,13 @@ Quando um registrador não possui valor válido, a UGE retorna o valor especial 
 | 5 | REG_Vers_Exp1 | R | int64 | — | — | Versão do firmware da placa de expansão de relés 1 |
 | 6 | REG_Vers_Exp2 | R | int64 | — | — | Versão do firmware da placa de expansão de relés 2 |
 
-> REG_Vers_FW é anunciado uma única vez no boot. O int64 contém os campos TFFFF, NPPPP, VV, EE, RR, SS em formato BCD empacotado (ver `tuNumeroSW_bcd` em typedef.h).
+> `REG_Vers_FW` é anunciado uma única vez no boot (`tuNumeroSW_dec`, 64 bits):
+> - `bits [7:0]` — `SS`
+> - `bits [15:8]` — `RR`
+> - `bits [31:16]` — `NPPPP`
+> - `bits [39:32]` — `EE`
+> - `bits [47:40]` — `VV`
+> - `bits [63:48]` — `TFFFF`
 
 ---
 
@@ -104,9 +113,11 @@ Quando um registrador não possui valor válido, a UGE retorna o valor especial 
 
 | Reg | Nome | Perm | Tipo | Escala | Base | Unidade | Descrição |
 |-----|------|------|------|--------|------|---------|-----------|
-| 35 | REG_Vsint | R | int16 | ×0.1 | BPU_Vcc | V | Tensão síntese (válido somente operando) |
+| 35 | REG_Vsint | R | int16 | ×0.1 | BPU_Vcc | V | Tensão síntese (aponta para `_EMPTY_F32` no TPS125) |
+| 36 | REG_Alfa1 | — | — | — | — | — | Não mapeado no TPS125 (`ptr=0` → `NACK_Inexistente`, legado SCR) |
+| 37 | REG_Alfa2 | — | — | — | — | — | Não mapeado no TPS125 (`ptr=0` → `NACK_Inexistente`, legado SCR) |
 | 38 | REG_Vripple | R | int16 | ×0.01 | — | V | Ripple de tensão CC (RMS AC) |
-| 39 | REG_Iret_dif | R | int16 | ×1 | — | — | Diferença de corrente entre sensores (reservado) |
+| 39 | REG_Iret_dif | R | int16 | ×1 | — | — | Diferença de corrente entre sensores (`_EMPTY_F32`) |
 | 40 | REG_Rendimento | R | int16 | ×0.01 | — | % | Rendimento do retificador |
 | 41 | REG_Pcc | R | int16 | ×10 | — | W | Potência ativa CC |
 | 42 | REG_Pca | R | int16 | ×10 | — | W | Potência ativa CA |
@@ -232,14 +243,33 @@ Quando um registrador não possui valor válido, a UGE retorna o valor especial 
 | 4 | SIN_Alerta1 | Alerta nível 1 |
 | 5 | SIN_Alerta2 | Alerta nível 2 |
 
-### Nota sobre REG_Crono_Prog e REG_Crono_Timeout
+### Nota sobre REG_Crono_Prog, REG_Crono_Timeout e UDQ (78–79)
 
-Estes registradores são do tipo `tuCronometro` (int32 bruto):
+`REG_Crono_Prog` e `REG_Crono_Timeout` são do tipo `tuCronometro` (`int32` bruto):
 
 ```
 bits [23:0]  — tempo em ms
+bits [29:24] — rsvd
 bit  [30]    — ativo (1 = cronômetro rodando)
 bit  [31]    — empty
+```
+
+`REG_Falha_UDQ` (78) usa `tuUDQ_Falhas` (`int16` bruto):
+```
+bit  [0]     — temperatura
+bit  [1]     — queda
+bit  [2]     — oscilacao
+bit  [3]     — sensor
+bits [14:4]  — rsvd
+bit  [15]    — empty
+```
+
+`REG_UDQ_Acao` (79) usa `tuUDQ_Acao` (`int16` bruto):
+```
+bit  [0]     — UDQ1
+bit  [1]     — UDQ2
+bit  [2]     — UDQ3
+bits [15:3]  — rsvd
 ```
 
 ---
@@ -288,8 +318,8 @@ Parâmetros de calibração de sensores e identificação do equipamento. Requer
 | 137 | REG_Vcons_offset | R/W | int16 | ×0.01 | Offset de calibração de Vcons (±5% pu) |
 | 138 | REG_Iret1_ganho | R/W | int16 | ×0.0001 | Ganho de calibração de Iret sensor 1 (±5%) |
 | 139 | REG_Iret1_offset | R/W | int16 | ×0.01 | Offset de calibração de Iret sensor 1 (±5% pu) |
-| 140 | REG_Iret2_ganho | R/W | int16 | — | Ganho de calibração de Iret sensor 2 (reservado) |
-| 141 | REG_Iret2_offset | R/W | int16 | — | Offset de calibração de Iret sensor 2 (reservado) |
+| 140 | REG_Iret2_ganho | R | int16 | — | Ganho de calibração de Iret sensor 2 (reservado, `_EMPTY_F32`) |
+| 141 | REG_Iret2_offset | R | int16 | — | Offset de calibração de Iret sensor 2 (reservado, `_EMPTY_F32`) |
 | 142 | REG_Ibat_ganho | R/W | int16 | ×0.0001 | Ganho de calibração de Ibat (±5%) |
 | 143 | REG_Ibat_offset | R/W | int16 | ×0.01 | Offset de calibração de Ibat (±5% pu) |
 | 144 | REG_Vca_RS_ganho | R/W | int16 | ×0.0001 | Ganho de calibração de Vca R-S (±5% ou ±10% com TP) |
@@ -321,17 +351,42 @@ Parâmetros nominais e de configuração do equipamento. A maioria requer o reti
 | 169 | REG_UR_Vcc_eme | R/W | int16 | ×0.1 | — | V | Tensão de emergência dos módulos UR (91–145 V, padrão 132 V) |
 | 170 | REG_UR_Quantidade | R/W | int16 | inteiro | — | — | Quantidade de módulos UR conectados (1–32) |
 | 171 | REG_UR_Sistema | R/W | int16 | inteiro | — | — | Sistema de alimentação dos módulos UR (ver tabela abaixo) |
-| 172 | REG_UR_Reservado1 | R/W | int16 | — | — | — | Reservado |
-| 173 | REG_UR_Reservado2 | R/W | int16 | — | — | — | Reservado |
-| 174 | REG_UR_Reservado3 | R/W | int16 | — | — | — | Reservado |
+| 172 | REG_UR_Reservado1 | — | — | — | — | — | Não mapeado (`ptr=0` → `NACK_Inexistente`) |
+| 173 | REG_UR_Reservado2 | — | — | — | — | — | Não mapeado (`ptr=0` → `NACK_Inexistente`) |
+| 174 | REG_UR_Reservado3 | — | — | — | — | — | Não mapeado (`ptr=0` → `NACK_Inexistente`) |
 | 175 | REG_Ctrl_Ret | R/W | int16 | inteiro | — | — | Índice do controlador do retificador (legado, ignorado) |
 | 176 | REG_Ctrl_UDQ | R/W | int16 | inteiro | — | — | Índice do controlador UDQ (somente 0 suportado) |
-| 177 | REG_Delay_Partida | R/W | int32 | ×1000 | — | s | Delay de standby antes de religar [ms internamente] |
-| 178 | REG_Reles_Fixos | R/W | int32 | bruto | — | — | Configuração de relés fixos (bitfield) |
-| 179 | REG_Cap_V | R | int16 | — | — | — | Capacidade de tensão (reservado, retorna EMPTY) |
-| 180 | REG_Cap_Q | R | int16 | — | — | — | Capacidade de potência reativa (reservado, retorna EMPTY) |
+| 177 | REG_Delay_Partida | R/W | int32 | ×1000 | — | s | Delay de standby antes de religar [enviado em s; ms internamente] |
+| 178 | REG_Reles_Fixos | R/W | int32 | bruto | — | — | Configuração de relés fixos (`tuRelesFixos`, ver abaixo) |
+| 179 | REG_Cap_V | R | int16 | — | — | — | Capacidade de tensão (reservado, `_EMPTY_F32`) |
+| 180 | REG_Cap_Q | R | int16 | — | — | — | Capacidade de potência reativa (reservado, `_EMPTY_F32`) |
 | 181 | REG_UDQ_diodos | R/W | int16 | inteiro | — | — | Número de diodos por estágio UDQ (4–20) |
-| 182 | REG_UDQ_Opcoes | R/W | int16 | bruto | — | — | Opções do módulo UDQ (bitfield) |
+| 182 | REG_UDQ_Opcoes | R/W | int16 | bruto | — | — | Opções do módulo UDQ (`tuUDQ_Opcoes`, ver abaixo) |
+
+### Estrutura de `REG_Reles_Fixos` (`tuRelesFixos`, `int32`)
+
+Cada slot de relé possui 4 bits com sinal (`-6` a `+6`, `0` = desabilitado):
+```
+bits [3:0]   — entrada  : Desconexão CA
+bits [7:4]   — precarga : Pré-carga
+bits [11:8]  — stand_by : Standby
+bits [15:12] — UDQ1     : UDQ Estágio 1
+bits [19:16] — UDQ2     : UDQ Estágio 2
+bits [23:20] — UDQ3     : UDQ Estágio 3
+bits [27:24] — LVD      : Desconexão CC (LVD)
+bits [30:28] — rsvd8    : Reservado
+bit  [31]    — empty    : Flag EMPTY
+```
+
+### Estrutura de `REG_UDQ_Opcoes` (`tuUDQ_Opcoes`, `int16`)
+
+```
+bits [1:0]   — diodo_bloq   : Quantidade/opção de diodo de bloqueio (0–3)
+bit  [2]     — cmd_paralelo : Comando paralelo
+bit  [3]     — cmd_serie    : Comando série
+bits [14:4]  — rsvd         : Reservado
+bit  [15]    — empty        : Flag EMPTY
+```
 
 ### Valores de REG_UR_Sistema (UR125_Sistema)
 
@@ -348,11 +403,12 @@ Parâmetros nominais e de configuração do equipamento. A maioria requer o reti
 
 Parâmetros de configuração dos sensores internos da placa CPU. Persistidos na seção `SEC_Sens_Int` da EEPROM. Requerem o retificador desligado para escrita fora da inicialização.
 
-Cada registrador é um int32 bruto com a estrutura `tuParamSensorInt`:
+Cada registrador é um `int32` bruto com a estrutura `tuParamSensorInt` (confirmada via DWARF do compilador TI C2000):
 
 ```
-bits [6:0]   — tipo do sensor (7 bits)
-bits [22:7]  — valor do parâmetro (16 bits, ex: resistor em décimos de kΩ)
+bits [15:0]  — valor (16 bits, ex: resistor em décimos de kΩ; 0x8000 quando não aplicável)
+bits [23:16] — rsvd  (8 bits reservados)
+bits [30:24] — tipo  (7 bits)
 bit  [31]    — empty
 ```
 
@@ -379,7 +435,7 @@ bit  [31]    — empty
 | Tipo | Nome | Descrição |
 |------|------|-----------|
 | 0 | SAD_ShuntDif60mV | Shunt diferencial 60 mV (não isolado) |
-| 1 | SAD_ShuntIso60mV | Shunt isolado 60 mV (somente Ibat) |
+| 1 | SAD_ShuntIso60mV | Shunt isolado 60 mV (aceito em Iret e Ibat no TPS125) |
 
 ### Tipos de sensor de tensão CA (SVA)
 
@@ -400,12 +456,12 @@ bit  [31]    — empty
 
 Parâmetros de configuração de sensores externos (TPs, TCs, shunts externos). Persistidos na seção `SEC_Sens_Ext` da EEPROM.
 
-Cada registrador é um int32 bruto com a estrutura `tuParamSensorExt`:
+Cada registrador é um `int32` bruto com a estrutura `tuParamSensorExt` (confirmada via DWARF do compilador TI C2000):
 
 ```
-bits [6:0]   — tipo do sensor (7 bits)
-bits [22:7]  — valor 1 (16 bits)
-bits [30:23] — valor 2 (8 bits)
+bits [15:0]  — valor 1 (16 bits — corrente nominal em 0.1 A ou tensão TP em 0.1 V)
+bits [23:16] — valor 2 (8 bits  — número de espiras do TC, 1–9)
+bits [30:24] — tipo do sensor (7 bits)
 bit  [31]    — empty
 ```
 
@@ -455,7 +511,7 @@ Setpoints e temporizações do carregador de baterias. Persistidos na seção `S
 
 ### Setpoints de tensão
 
-Todos em pu relativo a BPU_Vcc, escala ×0.1. Valor real = `valor_rede × 0.1 × Vcc_nom`.
+Armazenados internamente em pu relativo a `BPU_Vcc`; transmitidos na CAN em décimos de Volt (`escala ×0.1`: `valor_SI = valor_rede × 0.1`, ex.: `1350` ↔ `135.0 V`).
 
 | Reg | Nome | Perm | Tipo | Faixa (pu) | Descrição |
 |-----|------|------|------|------------|-----------|
@@ -469,7 +525,7 @@ Todos em pu relativo a BPU_Vcc, escala ×0.1. Valor real = `valor_rede × 0.1 ×
 
 ### Setpoints de corrente
 
-Todos em pu relativo a BPU_Icc, escala ×0.1. Valor real = `valor_rede × 0.1 × Icc_nom`.
+Armazenados internamente em pu relativo a `BPU_Icc`; transmitidos na CAN em décimos de Ampère (`escala ×0.1`: `valor_SI = valor_rede × 0.1`, ex.: `1500` ↔ `150.0 A`).
 
 | Reg | Nome | Perm | Tipo | Faixa (pu) | Descrição |
 |-----|------|------|------|------------|-----------|
@@ -500,7 +556,7 @@ Todos em pu relativo a BPU_Icc, escala ×0.1. Valor real = `valor_rede × 0.1 ×
 | Reg | Nome | Perm | Tipo | Escala | Unidade | Descrição |
 |-----|------|------|------|--------|---------|-----------|
 | 244 | REG_Vcomp_ref | R/W | int16 | ×0.1 | °C | Temperatura de referência para compensação (25–35°C, padrão 25°C) |
-| 245 | REG_Vcomp_coef | R/W | int16 | ×0.001 | pu/°C | Coeficiente de compensação de tensão por temperatura |
+| 245 | REG_Vcomp_coef | R/W | int16 | ×0.001 | V/°C | Coeficiente de compensação (`base=BPU_Vcc`; na CAN em mV/°C, ex: `300` ↔ `0.300 V/°C`) |
 | 246 | REG_Vcomp_min | R/W | int16 | ×0.1 | °C | Temperatura mínima para aplicar compensação (0–35°C) |
 
 ### Contadores e histórico
@@ -511,12 +567,14 @@ Todos em pu relativo a BPU_Icc, escala ×0.1. Valor real = `valor_rede × 0.1 ×
 | 257 | REG_Cont_Equ_Ini | R/W | int32 | inteiro | Contador de inícios de equalização (0–32000) |
 | 258 | REG_Cont_Equ_Fim | R/W | int32 | inteiro | Contador de fins de equalização (0–32000) |
 
-### Nota sobre REG_Fonte_Opcoes (tuFonteOpcoes)
+### Nota sobre REG_Fonte_Opcoes (`tuFonteOpcoes`, `int16`)
 
 ```
-bit 0 — bateria  : modo fonte com bateria habilitada
-bit 1 — UDQ      : modo fonte com UDQ habilitada
-bit 2 — fabrica  : modo fonte de fábrica (habilita bateria e UDQ)
+bit  [0]    — bateria : modo fonte com bateria habilitada
+bit  [1]    — UDQ     : modo fonte com UDQ habilitada
+bit  [2]    — fabrica : modo fonte de fábrica (habilita bateria e UDQ)
+bits [14:3] — rsvd    : reservado
+bit  [15]   — empty   : flag EMPTY
 ```
 
 ---
@@ -525,7 +583,7 @@ bit 2 — fabrica  : modo fonte de fábrica (habilita bateria e UDQ)
 
 Cada registrador mapeia um evento/status a relés de saída físicos. Persistidos nas seções `SEC_Reles1` (264–295) e `SEC_Reles2` (296–327) da EEPROM.
 
-Cada registrador é um int32 com a estrutura `tuReles`:
+Cada registrador é um `int32` com a estrutura `tuReles`:
 
 ```
 bits [4:0]   — RP1  : relé 1 da placa principal (0=nenhum, 1–6=relé)
@@ -534,6 +592,7 @@ bits [14:10] — RE11 : relé 1 da expansão 1 (0=nenhum, 1–8=relé)
 bits [19:15] — RE12 : relé 2 da expansão 1 (0=nenhum, 1–8=relé)
 bits [24:20] — RE21 : relé 1 da expansão 2 (0=nenhum, 1–8=relé)
 bits [29:25] — RE22 : relé 2 da expansão 2 (0=nenhum, 1–8=relé)
+bit  [30]    — rsvd : reservado
 bit  [31]    — empty
 ```
 
@@ -701,7 +760,9 @@ bit  [3]   — nivel : nível do alerta (0=alerta1, 1=alerta2)
 | 368 | REG_Opt_Manutencao | Manutenção programada |
 | 369 | REG_Opt_CAN | Falha de comunicação CAN (somente leitura) |
 | 370 | REG_Opt_Vcons_alta | Tensão do consumidor alta |
-| 371 | REG_Opt_Cbat_baixa | Carga de bateria baixa |
+| 371 | REG_Opt_Cbat_baixa | Carga de bateria baixa (campo `retardo` em minutos — base `60000 ms`, ex: `480` = 480 min) |
+
+> Posições não mapeadas neste bloco (`ptr=0` → `NACK_Inexistente`): `328`, `329`, `341`, `342`, `357`–`359`.
 | 372 | REG_Opt_UR_abnormal_voltage | Tensão anormal nos módulos UR |
 | 373 | REG_Opt_UR_ausente | Módulo UR ausente |
 | 374 | REG_Opt_UR_subtensao | Subtensão em módulo UR |
@@ -754,10 +815,10 @@ Valores de atuação de cada alarme. Persistidos nas seções `SEC_AlmAtu1` (376
 | 405 | REG_Atu_EqAuto_nao | R | — | — | — | — | — | Reservado |
 | 406 | REG_Atu_EqMan_nao | R | — | — | — | — | — | Reservado |
 | 407 | REG_Atu_Falha_UDQ | R | — | — | — | — | — | Reservado |
-| 408 | REG_Atu_Manutencao | R/W | int16 | ×1000 | — | s | 0–3.000.000 s | Intervalo de manutenção programada |
-| 409 | REG_Atu_CAN | R | — | — | — | — | — | Reservado |
-| 410 | REG_Atu_Vcons_alta | R | — | — | — | — | — | Reservado |
-| 411 | REG_Atu_Cbat_baixa | R/W | int16 | ×0.1 | BPU_Icc | Ah | 0–10.0 | Limiar de carga mínima de bateria |
+| 408 | REG_Atu_Manutencao | R/W | int16 | ×0.1 | — | kh | 0–300.0 kh | Intervalo de manutenção programada (na CAN `0–3000` ↔ `0–300.0 kh`; internamente `_long` ×1000 décimos de hora) |
+| 409 | REG_Atu_CAN | — | — | — | — | — | — | Não mapeado (`ptr=0` → `NACK_Inexistente`) |
+| 410 | REG_Atu_Vcons_alta | — | — | — | — | — | — | Não mapeado (`ptr=0` → `NACK_Inexistente`) |
+| 411 | REG_Atu_Cbat_baixa | R/W | int16 | ×0.1 | BPU_Icc | Ah | 0–10.0×Icc_nom | Limiar de carga mínima de bateria (ex: `6000` ↔ `600.0 Ah`) |
 | 412 | REG_Atu_UR_abnormal_voltage | R/W | int16 | ×0.1 | — | V | 6.25–6.50 V | Limiar de tensão anormal entre módulos UR |
 | 413 | REG_Atu_UR_ausente | R | — | — | — | — | — | Reservado (retorna EMPTY) |
 | 414 | REG_Atu_UR_subtensao | R | — | — | — | — | — | Reservado (retorna EMPTY) |
@@ -770,9 +831,9 @@ Valores de atuação de cada alarme. Persistidos nas seções `SEC_AlmAtu1` (376
 | Reg | Nome | Perm | Tipo | Escala | Descrição |
 |-----|------|------|------|--------|-----------|
 | 416 | REG_Teste_Din | R | int16 | bruto | Estado atual das entradas digitais (bitfield, D1=bit0 … D8=bit7) |
-| 417 | REG_Teste_Dout_pri | R/W | int16 | bruto | Teste de saídas digitais da placa principal (somente modo jiga) |
-| 418 | REG_Teste_Dout_exp1 | R/W | int16 | bruto | Teste de saídas digitais da expansão 1 (somente modo jiga) |
-| 419 | REG_Teste_Dout_exp2 | R/W | int16 | bruto | Teste de saídas digitais da expansão 2 (somente modo jiga) |
+| 417 | REG_Teste_Dout_pri | R/W | int16 | bruto | Teste de saídas digitais da placa principal (exclusivo firmware `-jiga`; `ptr=0` em `burnin`/produção) |
+| 418 | REG_Teste_Dout_exp1 | R/W | int16 | bruto | Teste de saídas digitais da expansão 1 (exclusivo firmware `-jiga`; `ptr=0` em `burnin`/produção) |
+| 419 | REG_Teste_Dout_exp2 | R/W | int16 | bruto | Teste de saídas digitais da expansão 2 (exclusivo firmware `-jiga`; `ptr=0` em `burnin`/produção) |
 | 424 | REG_Cmd_Liga | CMD | int16 | inteiro | Liga/desliga o retificador (0=desligar, 1=ligar) |
 | 425 | REG_Cmd_Reset | CMD | int16 | inteiro | Reset de falhas (qualquer valor diferente do anterior dispara o reset) |
 | 426 | REG_Cmd_Reboot | CMD | int16 | inteiro | Reboot da CPU (ver tabela de códigos abaixo) |
