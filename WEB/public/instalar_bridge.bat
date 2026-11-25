@@ -47,6 +47,17 @@ echo.
 echo [2/6] Encerrando instancia anterior do TEKSEA Bridge ^(se ativo^)...
 curl.exe -s -X POST http://127.0.0.1:8760/sys/shutdown >nul 2>&1
 timeout /t 1 /nobreak >nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object { $_.CommandLine -match 'teksea_bridge\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+timeout /t 1 /nobreak >nul
+
+:: Preserva config.json e ms_cache.bin caso exista instalacao anterior em Documents\TEKSEA_BRIDGE
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+if not exist "%INSTALL_DIR%\config.json" if exist "%USERPROFILE%\Documents\TEKSEA_BRIDGE\config.json" (
+    copy /y "%USERPROFILE%\Documents\TEKSEA_BRIDGE\config.json" "%INSTALL_DIR%\config.json" >nul 2>&1
+)
+if not exist "%INSTALL_DIR%\ms_cache.bin" if exist "%USERPROFILE%\Documents\TEKSEA_BRIDGE\ms_cache.bin" (
+    copy /y "%USERPROFILE%\Documents\TEKSEA_BRIDGE\ms_cache.bin" "%INSTALL_DIR%\ms_cache.bin" >nul 2>&1
+)
 
 :: --- PASSO 2: Criar estrutura de pastas e baixar do GitHub --
 echo [2/6] Baixando arquivos do TEKSEA Bridge v2.1.0 do GitHub...
