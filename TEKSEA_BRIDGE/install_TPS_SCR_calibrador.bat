@@ -54,8 +54,8 @@ if %errorLevel% neq 0 (
 echo.
 
 :: --- PASSO 2: Instalar Dependencias Pip ---------------------
-echo [2/5] Instalando dependencias Python (msal, requests)...
-python -m pip install --quiet --upgrade msal requests
+echo [2/5] Instalando dependencias Python (msal, requests, pymupdf, python-docx)...
+python -m pip install --quiet --upgrade msal requests pymupdf python-docx
 if %errorLevel% neq 0 (
     echo  ERRO ao instalar dependencias.
     goto :falha

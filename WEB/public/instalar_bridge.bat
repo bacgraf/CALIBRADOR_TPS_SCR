@@ -43,8 +43,13 @@ for /f "tokens=2" %%v in ('python --version') do set PYVER=%%v
 echo  OK - Python detectado: %PYVER%
 echo.
 
+:: --- PASSO 1.5: Encerrar instancia antiga do Bridge ---------
+echo [2/6] Encerrando instancia anterior do TEKSEA Bridge ^(se ativo^)...
+curl.exe -s -X POST http://127.0.0.1:8760/sys/shutdown >nul 2>&1
+timeout /t 1 /nobreak >nul
+
 :: --- PASSO 2: Criar estrutura de pastas e baixar do GitHub --
-echo [2/6] Baixando arquivos do TEKSEA Bridge do GitHub...
+echo [2/6] Baixando arquivos do TEKSEA Bridge v2.1.0 do GitHub...
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 if not exist "%INSTALL_DIR%\user_files\configs" mkdir "%INSTALL_DIR%\user_files\configs"
 if not exist "%INSTALL_DIR%\user_files\settings" mkdir "%INSTALL_DIR%\user_files\settings"
@@ -52,7 +57,9 @@ if not exist "%INSTALL_DIR%\user_files\images" mkdir "%INSTALL_DIR%\user_files\i
 
 for %%F in (
     "teksea_bridge.py"
+    "pit_parser.py"
     "flash_controller.py"
+    "version.json"
     "install_TPS_SCR_calibrador.bat"
     "uninstall_TPS_SCR_calibrador.bat"
     "one_time_setup.bat"
@@ -102,8 +109,8 @@ echo  OK - Arquivos prontos em %INSTALL_DIR%.
 echo.
 
 :: --- PASSO 3: Instalar Dependencias Python ------------------
-echo [3/6] Instalando dependencias Python ^(msal, requests^)...
-python -m pip install --quiet --upgrade msal requests
+echo [3/6] Instalando dependencias Python ^(msal, requests, pymupdf, python-docx^)...
+python -m pip install --quiet --upgrade msal requests pymupdf python-docx
 if %errorLevel% neq 0 (
     echo  ERRO ao instalar dependencias Python via pip.
     goto :falha

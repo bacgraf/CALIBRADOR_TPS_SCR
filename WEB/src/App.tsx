@@ -1,10 +1,25 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Info, ShieldAlert, Zap, ClipboardList, LogOut, User, LogIn, Cloud, Clock, Download } from 'lucide-react';
+import { Activity, Cpu, Settings, RefreshCw, CheckCircle2, XCircle, CircuitBoard, Search, Wifi, Info, ShieldAlert, Zap, ClipboardList, LogOut, User, LogIn, Cloud, Clock, Download, FileSpreadsheet, ArrowUpCircle } from 'lucide-react';
 import { dicionarioFalhas } from './lib/falhas';
 import { useWebSocket } from './lib/useWebSocket';
 import { useFlashController } from './lib/useFlashController';
 import { GraphAuth } from './services/microsoftGraph/auth';
 import { GraphExcel } from './services/microsoftGraph/excel';
+import { BkiView } from './BkiView';
+import { PitModal } from './PitModal';
+
+const EXPECTED_BRIDGE_VERSION = '2.1.0';
+const GITHUB_BRIDGE_VERSION_URL = 'https://raw.githubusercontent.com/bacgraf/CALIBRADOR_TPS_SCR/main/TEKSEA_BRIDGE/version.json';
+
+function compareSemver(a: string, b: string): number {
+  const pa = a.split('.').map(n => parseInt(n, 10) || 0);
+  const pb = b.split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+  }
+  return 0;
+}
 
 const checkHealth = (rawVal: number | undefined, divisor: number, refVal: string, openLimit: number, openThreshold: number, isOff: boolean) => {
   if (isOff || rawVal === undefined || rawVal <= -32700) return false;
@@ -182,12 +197,13 @@ const SensorBlock = ({
   );
 };
 
-const SelectionScreen = ({ onSelect, onOpenWifi, systemTime }: { onSelect: (mode: 'tps' | 'scr') => void, onOpenWifi: () => void, systemTime: string }) => {
+const SelectionScreen = ({ onSelect, onOpenWifi, systemTime }: { onSelect: (mode: 'tps' | 'scr' | 'bki') => void, onOpenWifi: () => void, systemTime: string }) => {
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 relative overflow-hidden">
       {/* Background Decor */}
       <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 rounded-full blur-[120px]" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/10 rounded-full blur-[120px]" />
+      <div className="absolute bottom-[20%] left-[20%] w-[35%] h-[35%] bg-violet-600/10 rounded-full blur-[120px]" />
 
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 text-slate-100">
         <span className="text-2xl font-mono font-bold tracking-widest">{systemTime}</span>
@@ -213,7 +229,7 @@ const SelectionScreen = ({ onSelect, onOpenWifi, systemTime }: { onSelect: (mode
         <p className="text-slate-400 font-medium">Selecione o produto para calibrar</p>
       </div>
 
-      <div className="z-10 grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-4xl px-4">
+      <div className="z-10 grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-6xl px-4">
         {/* CARD TPS */}
         <button
           onClick={() => onSelect('tps')}
@@ -243,6 +259,21 @@ const SelectionScreen = ({ onSelect, onOpenWifi, systemTime }: { onSelect: (mode
             INICIAR CALIBRAÇÃO <RefreshCw className="w-3 h-3" />
           </div>
         </button>
+
+        {/* CARD BKI */}
+        <button
+          onClick={() => onSelect('bki')}
+          className="group relative bg-slate-900/40 backdrop-blur-xl border border-slate-700/50 p-8 rounded-3xl text-left transition-all duration-500 hover:border-violet-500/50 hover:bg-slate-800/60 hover:shadow-[0_0_40px_-10px_rgba(139,92,246,0.3)]"
+        >
+          <div className="mb-6 w-14 h-14 rounded-2xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center text-violet-400 group-hover:scale-110 transition-transform shadow-inner group-hover:shadow-[0_0_20px_rgba(139,92,246,0.4)]">
+            <Zap className="w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">BKI 3F</h2>
+          <p className="text-sm text-slate-400 leading-relaxed mb-6">Nobreak Trifásico Industrial com inversor e bypass estático.</p>
+          <div className="flex items-center text-xs font-bold text-violet-400 gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            INICIAR CALIBRAÇÃO <RefreshCw className="w-3 h-3" />
+          </div>
+        </button>
       </div>
 
       <div className="mt-16 text-[10px] font-mono text-slate-600 uppercase tracking-widest">
@@ -269,11 +300,11 @@ const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) =>
       fetch('http://127.0.0.1:8760/sys/status')
         .then(res => res.json())
         .then(data => {
-            if (data.ms_logged_in) {
-                setMsAccount({ name: data.ms_username });
-            } else {
-                setMsAccount(null);
-            }
+          if (data.ms_logged_in) {
+            setMsAccount({ name: data.ms_username });
+          } else {
+            setMsAccount(null);
+          }
         })
         .catch(() => setMsAccount(null));
     }, 2000);
@@ -284,35 +315,35 @@ const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) =>
     setIsWaitingLogin(true);
     setDeviceCodeInfo(null);
     try {
-        const res = await fetch('http://127.0.0.1:8760/cloud/devicecode');
-        const codeData = await res.json();
-        if (codeData.error) throw new Error(codeData.error);
-        
-        setDeviceCodeInfo({ userCode: codeData.user_code, verificationUri: codeData.verification_uri });
+      const res = await fetch('http://127.0.0.1:8760/cloud/devicecode');
+      const codeData = await res.json();
+      if (codeData.error) throw new Error(codeData.error);
 
-        // Chama a rota de token (o Python vai ficar em aguardo até o usuário terminar no celular/navegador)
-        fetch('http://127.0.0.1:8760/cloud/token', { method: 'POST' })
-            .then(tokenRes => tokenRes.json())
-            .then(tokenData => {
-                if (tokenData.success) {
-                    setMsAccount({ name: tokenData.username });
-                } else {
-                    alert("Erro na autenticação: " + tokenData.error);
-                }
-            })
-            .finally(() => {
-                setDeviceCodeInfo(null);
-                setIsWaitingLogin(false);
-            });
+      setDeviceCodeInfo({ userCode: codeData.user_code, verificationUri: codeData.verification_uri });
+
+      // Chama a rota de token (o Python vai ficar em aguardo até o usuário terminar no celular/navegador)
+      fetch('http://127.0.0.1:8760/cloud/token', { method: 'POST' })
+        .then(tokenRes => tokenRes.json())
+        .then(tokenData => {
+          if (tokenData.success) {
+            setMsAccount({ name: tokenData.username });
+          } else {
+            alert("Erro na autenticação: " + tokenData.error);
+          }
+        })
+        .finally(() => {
+          setDeviceCodeInfo(null);
+          setIsWaitingLogin(false);
+        });
 
     } catch (err) {
-        alert("Erro ao conectar ao Bridge Python: " + err);
-        setIsWaitingLogin(false);
+      alert("Erro ao conectar ao Bridge Python: " + err);
+      setIsWaitingLogin(false);
     }
   };
 
   const handleMicrosoftLogout = () => {
-    fetch('http://127.0.0.1:8760/cloud/logout').catch(() => {});
+    fetch('http://127.0.0.1:8760/cloud/logout').catch(() => { });
     setMsAccount(null);
     setDeviceCodeInfo(null);
     setIsWaitingLogin(false);
@@ -357,19 +388,19 @@ const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) =>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rows })
     })
-    .then(res => res.json())
-    .then(data => {
-      setIsUpdating(false);
-      if (data.success) {
-        setLoteStatus({ msg: "✅ Lote salvo com sucesso na Nuvem!", type: 'success' });
-      } else {
-        setLoteStatus({ msg: "❌ Erro: " + data.error, type: 'error' });
-      }
-    })
-    .catch((err) => {
-      setIsUpdating(false);
-      setLoteStatus({ msg: "❌ Bridge offline ou bloqueado.", type: 'error' });
-    });
+      .then(res => res.json())
+      .then(data => {
+        setIsUpdating(false);
+        if (data.success) {
+          setLoteStatus({ msg: "✅ Lote salvo com sucesso na Nuvem!", type: 'success' });
+        } else {
+          setLoteStatus({ msg: "❌ Erro: " + data.error, type: 'error' });
+        }
+      })
+      .catch((err) => {
+        setIsUpdating(false);
+        setLoteStatus({ msg: "❌ Bridge offline ou bloqueado.", type: 'error' });
+      });
   };
 
   return (
@@ -413,50 +444,50 @@ const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) =>
               <label className="text-[10px] text-slate-500 font-bold uppercase">Cloud / Bridge Python</label>
               {msAccount ? (
                 <button onClick={handleMicrosoftLogout} className="text-[10px] text-red-400 font-bold flex items-center gap-1 hover:underline">
-                    <LogOut size={12} /> SAIR
+                  <LogOut size={12} /> SAIR
                 </button>
               ) : isWaitingLogin ? (
                 <button onClick={handleMicrosoftLogout} className="text-[10px] text-slate-400 font-bold flex items-center gap-1 hover:underline">
-                    Cancelar
+                  Cancelar
                 </button>
               ) : (
                 <button onClick={handleMicrosoftLogin} className="text-[10px] text-blue-400 font-bold flex items-center gap-1 hover:underline">
-                    <LogIn size={12} /> ENTRAR
+                  <LogIn size={12} /> ENTRAR
                 </button>
               )}
             </div>
-            
+
             {msAccount ? (
-                <div className="flex items-center gap-2 p-2 bg-blue-600/10 border border-blue-500/30 rounded">
-                    <Cloud className="w-4 h-4 text-blue-400" />
-                    <div className="flex flex-col">
-                        <span className="text-[11px] text-slate-200 font-bold">{msAccount.name}</span>
-                        <span className="text-[9px] text-slate-400">Bridge Autenticado (SharePoint 106FAB)</span>
-                    </div>
+              <div className="flex items-center gap-2 p-2 bg-blue-600/10 border border-blue-500/30 rounded">
+                <Cloud className="w-4 h-4 text-blue-400" />
+                <div className="flex flex-col">
+                  <span className="text-[11px] text-slate-200 font-bold">{msAccount.name}</span>
+                  <span className="text-[9px] text-slate-400">Bridge Autenticado (SharePoint 106FAB)</span>
                 </div>
+              </div>
             ) : deviceCodeInfo ? (
-                <div className="flex flex-col gap-2 p-2 bg-amber-900/20 border border-amber-500/40 rounded">
-                    <p className="text-[10px] text-amber-300 font-bold">1. Acesse em qualquer dispositivo:</p>
-                    <a 
-                      href={deviceCodeInfo.verificationUri} 
-                      target="_blank" 
-                      rel="noreferrer"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        window.open(deviceCodeInfo.verificationUri, 'mslogin', 'width=500,height=600,left=100,top=100');
-                      }}
-                      className="text-[11px] text-blue-400 underline font-mono hover:text-blue-300"
-                    >
-                      {deviceCodeInfo.verificationUri}
-                    </a>
-                    <p className="text-[10px] text-amber-300 font-bold mt-1">2. Digite o código:</p>
-                    <div className="text-center py-2 bg-slate-950 rounded border border-slate-600">
-                        <span className="text-2xl font-mono font-black tracking-[0.3em] text-white">{deviceCodeInfo.userCode}</span>
-                    </div>
-                    <p className="text-[9px] text-slate-500 text-center animate-pulse">Aguardando você logar no navegador...</p>
+              <div className="flex flex-col gap-2 p-2 bg-amber-900/20 border border-amber-500/40 rounded">
+                <p className="text-[10px] text-amber-300 font-bold">1. Acesse em qualquer dispositivo:</p>
+                <a
+                  href={deviceCodeInfo.verificationUri}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    window.open(deviceCodeInfo.verificationUri, 'mslogin', 'width=500,height=600,left=100,top=100');
+                  }}
+                  className="text-[11px] text-blue-400 underline font-mono hover:text-blue-300"
+                >
+                  {deviceCodeInfo.verificationUri}
+                </a>
+                <p className="text-[10px] text-amber-300 font-bold mt-1">2. Digite o código:</p>
+                <div className="text-center py-2 bg-slate-950 rounded border border-slate-600">
+                  <span className="text-2xl font-mono font-black tracking-[0.3em] text-white">{deviceCodeInfo.userCode}</span>
                 </div>
+                <p className="text-[9px] text-slate-500 text-center animate-pulse">Aguardando você logar no navegador...</p>
+              </div>
             ) : (
-                <div className="text-[11px] text-slate-500 italic">Faça login para gravar na nuvem via Python.</div>
+              <div className="text-[11px] text-slate-500 italic">Faça login para gravar na nuvem via Python.</div>
             )}
           </div>
 
@@ -467,16 +498,15 @@ const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) =>
 
         {/* Status Feedback */}
         {loteStatus.type && (
-          <div className={`px-4 py-2 text-center text-[11px] font-bold animate-in fade-in slide-in-from-top-1 ${
-            loteStatus.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-          }`}>
+          <div className={`px-4 py-2 text-center text-[11px] font-bold animate-in fade-in slide-in-from-top-1 ${loteStatus.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+            }`}>
             {loteStatus.msg}
           </div>
         )}
 
         <div className="px-4 py-3 bg-slate-800/50 border-t border-slate-700 flex justify-end gap-2">
-          <button 
-            onClick={() => { setLoteStatus({ msg: '', type: null }); onClose(); }} 
+          <button
+            onClick={() => { setLoteStatus({ msg: '', type: null }); onClose(); }}
             disabled={isUpdating}
             className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors disabled:opacity-50"
           >
@@ -485,11 +515,10 @@ const LoteModal = React.memo(({ onClose, ugeVers, appMode, scrSubMode }: any) =>
           <button
             onClick={loteStatus.type === 'success' ? () => { setLoteStatus({ msg: '', type: null }); onClose(); } : handleGenerate}
             disabled={isUpdating}
-            className={`px-4 py-2 rounded text-xs font-bold transition-all shadow ${
-              isUpdating ? 'bg-slate-700 text-slate-400 cursor-not-allowed' :
-              loteStatus.type === 'success' ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/50' :
-              'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/50'
-            }`}
+            className={`px-4 py-2 rounded text-xs font-bold transition-all shadow ${isUpdating ? 'bg-slate-700 text-slate-400 cursor-not-allowed' :
+                loteStatus.type === 'success' ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/50' :
+                  'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/50'
+              }`}
           >
             {isUpdating ? 'GRAVANDO...' : loteStatus.type === 'success' ? 'CONCLUÍDO' : 'ATUALIZAR EXCEL'}
           </button>
@@ -509,6 +538,11 @@ export default function App() {
   const [bridgeAlive, setBridgeAlive] = useState(false);
   const [bridgeStarting, setBridgeStarting] = useState(false);
   const [bridgeInstallNeeded, setBridgeInstallNeeded] = useState(false);
+  const [bridgeVersion, setBridgeVersion] = useState<string | null>(null);
+  const [bridgeCapabilities, setBridgeCapabilities] = useState<string[]>([]);
+  const [latestBridgeVersion, setLatestBridgeVersion] = useState<string>(EXPECTED_BRIDGE_VERSION);
+  const [bridgeUpdating, setBridgeUpdating] = useState(false);
+  const [showPitModal, setShowPitModal] = useState(false);
   const bridgeAutoStarted = useRef(false);
   const bridgeStartTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [cloudUser, setCloudUser] = useState<string | null>(null);
@@ -517,6 +551,47 @@ export default function App() {
   const [systemTime, setSystemTime] = useState(() =>
     new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   );
+
+  // Verifica versão mais recente do Bridge no GitHub (silencioso se offline)
+  useEffect(() => {
+    fetch(GITHUB_BRIDGE_VERSION_URL, { cache: 'no-store' })
+      .then(res => (res.ok ? res.json() : null))
+      .then(info => {
+        if (info?.version && typeof info.version === 'string') {
+          setLatestBridgeVersion(prev => (compareSemver(info.version, prev) > 0 ? info.version : prev));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const bridgeUpdateAvailable = bridgeAlive && (!bridgeVersion || compareSemver(bridgeVersion, latestBridgeVersion) < 0);
+  const bridgeHasSelfUpdate = bridgeCapabilities.includes('self_update');
+  const bridgeHasPit = bridgeCapabilities.includes('pit_parser');
+
+  const handleUpdateBridge = useCallback(async () => {
+    if (!bridgeHasSelfUpdate) {
+      // Bridge antigo sem /sys/update: dispara download do instalador atualizado
+      const a = document.createElement('a');
+      a.href = '/instalar_bridge.bat';
+      a.download = 'instalar_bridge.bat';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+    setBridgeUpdating(true);
+    try {
+      const resp = await fetch('http://127.0.0.1:8760/sys/update', { method: 'POST' });
+      const res = await resp.json();
+      if (!resp.ok || !res.success) {
+        throw new Error(res.error || `HTTP ${resp.status}`);
+      }
+      setTimeout(() => setBridgeUpdating(false), 4000);
+    } catch (err: any) {
+      setBridgeUpdating(false);
+      alert('Falha na atualização automática do Bridge: ' + (err?.message || err) + '\nUse o instalador instalar_bridge.bat.');
+    }
+  }, [bridgeHasSelfUpdate]);
 
   useEffect(() => {
     const clockInterval = setInterval(() => {
@@ -549,6 +624,8 @@ export default function App() {
           if (data.bridge_alive) {
             setBridgeStarting(false);
             setBridgeInstallNeeded(false);
+            setBridgeVersion(typeof data.bridge_version === 'string' ? data.bridge_version : null);
+            setBridgeCapabilities(Array.isArray(data.capabilities) ? data.capabilities : []);
             if (bridgeStartTimeout.current) {
               clearTimeout(bridgeStartTimeout.current);
               bridgeStartTimeout.current = null;
@@ -559,6 +636,8 @@ export default function App() {
         })
         .catch(() => {
           setBridgeAlive(false);
+          setBridgeVersion(null);
+          setBridgeCapabilities([]);
           setCloudUser(null);
           if (!bridgeAutoStarted.current) {
             bridgeAutoStarted.current = true;
@@ -573,8 +652,8 @@ export default function App() {
       if (bridgeStartTimeout.current) clearTimeout(bridgeStartTimeout.current);
     };
   }, [triggerBridgeStart]);
-  const [appMode, setAppMode] = useState<'selection' | 'tps' | 'scr'>(() => {
-    return (localStorage.getItem('calibrador_mode') as 'tps' | 'scr') || 'selection';
+  const [appMode, setAppMode] = useState<'selection' | 'tps' | 'scr' | 'bki'>(() => {
+    return (localStorage.getItem('calibrador_mode') as 'tps' | 'scr' | 'bki') || 'selection';
   });
 
   // Atualiza o título da aba do navegador dinamicamente
@@ -588,22 +667,31 @@ export default function App() {
 
   const [isRevealing, setIsRevealing] = useState(false);
 
-  const handleSelectMode = (mode: 'tps' | 'scr' | 'selection') => {
+  const wsUrl = `ws://${window.location.hostname}/ws`;
+  const { data, connected, send, request } = useWebSocket(wsUrl);
+
+  const handleSelectMode = (mode: 'tps' | 'scr' | 'bki' | 'selection') => {
     if (mode === 'selection') {
       setAppMode('selection');
       localStorage.removeItem('calibrador_mode');
+      send({ command: 'set_product', product: 'tps' });
       return;
     }
     // Muda o modo IMEDIATAMENTE para o dashboard renderizar por baixo
     setAppMode(mode);
     localStorage.setItem('calibrador_mode', mode);
+    send({ command: 'set_product', product: mode });
     // Depois exibe o overlay que vai saindo, revelando o dashboard
     setIsRevealing(true);
     setTimeout(() => setIsRevealing(false), 1300);
   };
 
-  const wsUrl = `ws://${window.location.hostname}/ws`;
-  const { data, connected, send, request } = useWebSocket(wsUrl);
+  // Sincroniza o produto com o ESP32 quando conecta
+  useEffect(() => {
+    if (connected && appMode !== 'selection') {
+      send({ command: 'set_product', product: appMode });
+    }
+  }, [connected, appMode, send]);
 
   const [refVcc, setRefVcc] = useState('125.00');
   const [refIcc, setRefIcc] = useState('60.00');
@@ -825,7 +913,7 @@ export default function App() {
   // --- HEARTBEAT GLOBAL: mantém o Teksea Bridge vivo enquanto a aba está aberta ---
   useEffect(() => {
     const beat = setInterval(() => {
-      fetch('http://127.0.0.1:8760/sys/heartbeat').catch(() => {});
+      fetch('http://127.0.0.1:8760/sys/heartbeat').catch(() => { });
     }, 5000);
     return () => clearInterval(beat);
   }, []);
@@ -843,7 +931,7 @@ export default function App() {
       .then(d => {
         if (!abort.signal.aborted) setFwAvailable({ jiga: d.jiga === true, burnin: d.burnin === true, cliente: d.cliente === true });
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => clearTimeout(timer));
     return () => { abort.abort(); clearTimeout(timer); };
   }, [showFlashModal, canStartFlash, appMode]);
@@ -973,9 +1061,30 @@ export default function App() {
       `}</style>
 
       {showLoteModal && <LoteModal onClose={handleCloseLoteModal} ugeVers={data.uge_vers} appMode={appMode} scrSubMode={scrSubMode} />}
+      {showPitModal && (
+        <PitModal
+          onClose={() => setShowPitModal(false)}
+          bridgeAlive={bridgeAlive}
+          bridgeHasPit={bridgeHasPit}
+          connected={connected}
+          ugeOk={Boolean(data.uge_ok)}
+          ugeVers={data.uge_vers}
+          request={request}
+        />
+      )}
 
       {appMode === 'selection' ? (
         <SelectionScreen onSelect={handleSelectMode} onOpenWifi={() => setShowWifiModal(true)} systemTime={systemTime} />
+      ) : appMode === 'bki' ? (
+        <BkiView
+          data={data}
+          connected={connected}
+          send={send}
+          request={request}
+          onBack={() => handleSelectMode('selection')}
+          onOpenWifi={() => setShowWifiModal(true)}
+          systemTime={systemTime}
+        />
       ) : (
         <div className="h-screen bg-slate-950 flex flex-col font-sans text-slate-200 overflow-hidden">
           <header className="relative bg-slate-900 border-b border-slate-800 px-4 py-2 flex justify-between items-center shadow-md z-10">
@@ -993,6 +1102,15 @@ export default function App() {
                 >
                   <ClipboardList className="w-4 h-4" /> LOTE
                 </button>
+                {appMode === 'tps' && (
+                  <button
+                    onClick={() => setShowPitModal(true)}
+                    title="Importar planilha PIT (PDF, Excel, Word) e gravar na UGE"
+                    className="px-3 py-1 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/30 rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                  >
+                    <FileSpreadsheet className="w-4 h-4" /> PIT
+                  </button>
+                )}
               </div>
               <button
                 onClick={() => handleSelectMode('selection')}
@@ -1031,19 +1149,38 @@ export default function App() {
                 UGE: {data.uge_ok ? 'LINK OK' : 'OFF'}
               </div>
               {bridgeAlive ? (
-                <div className="px-3 py-1 rounded-full text-xs font-bold border bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
-                  BRIDGE: OK
+                <div className="flex items-center gap-1.5">
+                  <div
+                    title={`TEKSEA Bridge ${bridgeVersion ? `v${bridgeVersion}` : 'versão antiga (< 2.1.0)'}`}
+                    className="px-3 py-1 rounded-full text-xs font-bold border bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                  >
+                    BRIDGE: OK {bridgeVersion ? `v${bridgeVersion}` : ''}
+                  </div>
+                  {bridgeUpdateAvailable && (
+                    <button
+                      onClick={handleUpdateBridge}
+                      disabled={bridgeUpdating}
+                      title={
+                        bridgeHasSelfUpdate
+                          ? `Atualizar TEKSEA Bridge automaticamente para v${latestBridgeVersion}`
+                          : `Nova versão v${latestBridgeVersion} disponível. Clique para baixar instalar_bridge.bat.`
+                      }
+                      className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 border border-amber-300 flex items-center gap-1 shadow transition-colors disabled:opacity-50"
+                    >
+                      <ArrowUpCircle size={13} />
+                      {bridgeUpdating ? 'ATUALIZANDO...' : `ATUALIZAR BRIDGE v${latestBridgeVersion}`}
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="flex items-center gap-1.5">
                   <button
                     onClick={triggerBridgeStart}
                     title="Clique para tentar iniciar o TEKSEA Bridge"
-                    className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors ${
-                      bridgeStarting
+                    className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors ${bridgeStarting
                         ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 animate-pulse'
                         : 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30'
-                    }`}
+                      }`}
                   >
                     BRIDGE: {bridgeStarting ? 'INICIANDO...' : 'OFF'}
                   </button>
@@ -1409,11 +1546,10 @@ export default function App() {
               <button
                 onClick={() => { void request({ command: data.relay?.active || data.relay?.stopping ? 'cancel_test' : 'start_test' }).catch(error => window.alert(error.message)); }}
                 disabled={!connected || (isOff && !data.relay?.active && !data.relay?.stopping)}
-                className={`px-3 py-1.5 text-[10px] font-bold rounded shadow border transition-colors disabled:opacity-50 ${
-                  data.relay?.active || data.relay?.stopping
+                className={`px-3 py-1.5 text-[10px] font-bold rounded shadow border transition-colors disabled:opacity-50 ${data.relay?.active || data.relay?.stopping
                     ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'
                     : 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-slate-600'
-                }`}
+                  }`}
               >
                 TESTAR RELÉS
               </button>
@@ -1485,26 +1621,25 @@ export default function App() {
                     Você selecionou a opção:<br />
                     <b className="text-slate-100">
                       {[
-                        "1. Normal / Salvar", "2. Ajustar Horímetro", "3. Apagar Ajustes", 
+                        "1. Normal / Salvar", "2. Ajustar Horímetro", "3. Apagar Ajustes",
                         "4. Apagar Param. Base", "5. Apagar EEPROM", "6. Inicializar EEPROM", "7. Restaurar"
                       ][rebootTarget - 1]}
                     </b>
                     <br /><br />
                     A CPU irá reiniciar para aplicar esta ação. Deseja continuar?
                   </p>
-                  
+
                   <div className="flex gap-4 w-full">
-                    <button 
+                    <button
                       onClick={() => setRebootTarget(null)}
                       className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-lg transition-colors"
                     >
                       VOLTAR
                     </button>
-                    <button 
+                    <button
                       onClick={() => sendReboot(rebootTarget)}
-                      className={`flex-1 px-4 py-3 text-white font-bold rounded-lg transition-colors shadow-lg ${
-                        rebootTarget >= 5 ? 'bg-red-600 hover:bg-red-500 shadow-red-900/40' : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/40'
-                      }`}
+                      className={`flex-1 px-4 py-3 text-white font-bold rounded-lg transition-colors shadow-lg ${rebootTarget >= 5 ? 'bg-red-600 hover:bg-red-500 shadow-red-900/40' : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/40'
+                        }`}
                     >
                       SIM, REINICIAR
                     </button>
@@ -1607,9 +1742,9 @@ export default function App() {
                   if (window.confirm('Interromper a gravação? Pode ser necessário regravar o equipamento.')) void cancelFlash();
                 }}>CANCELAR GRAVAÇÃO</button>
               )}
-              <button 
-                onClick={() => setShowFlashModal(false)} 
-                disabled={isFlashing} 
+              <button
+                onClick={() => setShowFlashModal(false)}
+                disabled={isFlashing}
                 className={`px-4 py-2 rounded shadow-sm text-sm font-bold transition-all ${isFlashing ? 'bg-slate-800 border-slate-600 text-slate-500 opacity-50' : flashProgress >= 100 ? 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 shadow-lg shadow-emerald-900/20' : 'bg-slate-800 border border-slate-600 text-slate-300 hover:bg-slate-700'}`}
               >
                 {flashOperation.state === 'succeeded' ? 'CONCLUÍDO' : 'FECHAR'}
@@ -1744,7 +1879,7 @@ export default function App() {
                 </div>
               </div>
             </div>
-            
+
             <div className="bg-slate-900 px-6 py-4 flex justify-end gap-3 border-t border-slate-700">
               <button onClick={() => setShowWifiModal(false)} className="px-4 py-2 text-sm font-bold text-slate-400 hover:text-slate-200 transition-colors">CANCELAR</button>
               <span role="status" className="text-xs text-amber-300 mr-3">{wifiMessage}</span>

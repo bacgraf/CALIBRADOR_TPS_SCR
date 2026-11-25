@@ -8,13 +8,30 @@ import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
 import urllib.request
+import base64
+import tempfile
 from flash_controller import FlashController, firmware_command
+import pit_parser
 import msal
 import requests
 
 # ============================================================
 # CONFIGURAÇÕES TÉCNICAS
 # ============================================================
+BRIDGE_VERSION = "2.1.0"
+GITHUB_BRIDGE_RAW = "https://raw.githubusercontent.com/bacgraf/CALIBRADOR_TPS_SCR/main/TEKSEA_BRIDGE"
+NET_SHARE_BRIDGE = r"\\srv01\01 TEKSEA\111 PUB\01 INTRANET\Marcel Hilleshein\DEV\CALIBRADOR_TPS_SCR\TEKSEA_BRIDGE"
+BRIDGE_UPDATE_FILES = [
+    "teksea_bridge.py",
+    "pit_parser.py",
+    "flash_controller.py",
+    "version.json",
+    "install_TPS_SCR_calibrador.bat",
+    "uninstall_TPS_SCR_calibrador.bat",
+    "one_time_setup.bat",
+    "kill_bridge.bat",
+    "stop_bridge.py",
+]
 PORT = 8760
 LAST_HEARTBEAT = time.time()
 
@@ -57,7 +74,40 @@ atexit.register(save_msal_cache)
 
 # Variável global para o fluxo de device code em andamento
 _current_device_flow = None
-_msal_app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=_msal_cache)
+_msal_app = None
+
+# ============================================================
+# MÓDULO: MICROSOFT GRAPH (CLOUD)
+# ============================================================
+def get_msal_app():
+    global _msal_app
+    if _msal_app is None:
+        try:
+            _msal_app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=_msal_cache)
+        except Exception as e:
+            log_debug(f"MSAL offline/indisponivel: {e}")
+            return None
+    return _msal_app
+
+def get_msal_accounts():
+    app = get_msal_app()
+    if not app:
+        return []
+    try:
+        return app.get_accounts()
+    except Exception:
+        return []
+
+def get_access_token():
+    app = get_msal_app()
+    if not app:
+        return None
+    accounts = get_msal_accounts()
+    if accounts:
+        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+        if result and "access_token" in result:
+            return result["access_token"]
+    return None
 
 # Caminhos padrões
 CONFIG_FILE = "config.json"
@@ -76,20 +126,6 @@ def load_config():
 def save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
-
-# ============================================================
-# MÓDULO: MICROSOFT GRAPH (CLOUD)
-# ============================================================
-def get_msal_app():
-    return _msal_app
-
-def get_access_token():
-    accounts = _msal_app.get_accounts()
-    if accounts:
-        result = _msal_app.acquire_token_silent(SCOPES, account=accounts[0])
-        if result and "access_token" in result:
-            return result["access_token"]
-    return None
 
 # ============================================================
 # MÓDULO: SHAREPOINT UPLOAD
@@ -223,20 +259,32 @@ class TekseaHandler(BaseHTTPRequestHandler):
             self.send_json({"status": "alive"})
         
         elif path == '/sys/status':
-            accounts = _msal_app.get_accounts()
+            accounts = get_msal_accounts()
             conf = load_config()
             self.send_json({
                 "bridge_alive": True,
+                "bridge_version": BRIDGE_VERSION,
+                "capabilities": ["pit_parser", "self_update", "tms_flash", "cloud_upload"],
                 "ms_logged_in": bool(accounts),
                 "ms_username": accounts[0].get("username", "Usuario") if accounts else "",
                 "tps_root": conf.get("tps_root", "Não configurado"),
                 "scr_root": conf.get("scr_root", "Não configurado")
             })
 
+        elif path == '/sys/version':
+            self.send_json({
+                "version": BRIDGE_VERSION,
+                "capabilities": ["pit_parser", "self_update", "tms_flash", "cloud_upload"]
+            })
+
         # --- CLOUD ---
         elif path == '/cloud/devicecode':
             global _current_device_flow
-            flow = _msal_app.initiate_device_flow(scopes=SCOPES)
+            app = get_msal_app()
+            if not app:
+                self.send_json({"error": "Sem conexao com a internet para autenticar na Microsoft."}, 503)
+                return
+            flow = app.initiate_device_flow(scopes=SCOPES)
             if "user_code" in flow:
                 _current_device_flow = flow  # Guarda em memória para o /token usar
                 self.send_json({
@@ -248,9 +296,10 @@ class TekseaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Falha ao iniciar device flow"})
 
         elif path == '/cloud/logout':
-            accounts = _msal_app.get_accounts()
-            for a in accounts:
-                _msal_app.remove_account(a)
+            app = get_msal_app()
+            if app:
+                for a in get_msal_accounts():
+                    app.remove_account(a)
             if os.path.exists(CACHE_FILE):
                 try: os.remove(CACHE_FILE)
                 except: pass
@@ -318,14 +367,122 @@ class TekseaHandler(BaseHTTPRequestHandler):
         LAST_HEARTBEAT = time.time() # Qualquer POST renova o tempo de vida
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
-        self.connection.settimeout(10)
+        self.connection.settimeout(30 if path == '/api/parse-pit' else 10)
         try:
             content_length = int(self.headers.get('Content-Length', 0))
-            if not 0 <= content_length <= 1048576:
+            max_len = 15 * 1024 * 1024 if path == '/api/parse-pit' else 1048576
+            if not 0 <= content_length <= max_len:
                 raise ValueError('Corpo da requisição excede o limite.')
             post_data = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ""
         except (ValueError, OSError) as exc:
             self.send_json({'error': str(exc)}, 400)
+            return
+
+        if path == '/api/parse-pit':
+            tmp_path = None
+            try:
+                data = json.loads(post_data)
+                filename = str(data.get('filename', '')).strip()
+                b64 = data.get('content_base64', '')
+                if not filename or not b64:
+                    raise ValueError('Campos filename e content_base64 sao obrigatorios.')
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in ('.csv', '.xlsx', '.xlsm', '.docx', '.pdf'):
+                    raise ValueError(f'Formato nao suportado: {ext}. Use CSV, XLSX, DOCX ou PDF.')
+                if ',' in b64 and b64.startswith('data:'):
+                    b64 = b64.split(',', 1)[1]
+                raw_bytes = base64.b64decode(b64)
+                fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix='pit_')
+                with os.fdopen(fd, 'wb') as tf:
+                    tf.write(raw_bytes)
+                result = pit_parser.parse_pit_file(tmp_path)
+                result['source_file'] = os.path.basename(filename)
+                result['success'] = True
+                self.send_json(result, 200)
+            except Exception as exc:
+                log_debug(f"Erro em /api/parse-pit: {exc}")
+                self.send_json({'success': False, 'error': str(exc)}, 400)
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+            return
+
+        if path == '/api/pit/revalidate':
+            try:
+                data = json.loads(post_data)
+                pit = data.get('pit')
+                if not isinstance(pit, dict):
+                    raise ValueError('Objeto pit invalido.')
+                warnings = pit_parser.validate_pit(pit)
+                can_plan = pit_parser.build_can_writes(pit)
+                self.send_json({
+                    'success': True,
+                    'pit': pit,
+                    'warnings': warnings,
+                    'can_plan': can_plan,
+                    'summary': {
+                        'phase1_writes': len(can_plan['phase1_base']),
+                        'phase2_writes': len(can_plan['phase2_user']),
+                        'params_parsed': len(pit.get('parametros', {})),
+                        'alarms_parsed': len(pit.get('alarmes', {})),
+                        'din_parsed': len(pit.get('entradas_digitais', {})),
+                        'status_relays_parsed': len(pit.get('saidas_rele', {})),
+                        'warnings_count': len(warnings),
+                        'errors_count': sum(1 for w in warnings if w['severity'] == 'error'),
+                    }
+                }, 200)
+            except Exception as exc:
+                self.send_json({'success': False, 'error': str(exc)}, 400)
+            return
+
+        if path == '/sys/update':
+            if flash_controller.snapshot()['busy']:
+                self.send_json({'success': False, 'error': 'Aguarde a gravacao JTAG terminar antes de atualizar o Bridge.'}, 409)
+                return
+            try:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                updated = []
+                for fname in BRIDGE_UPDATE_FILES:
+                    dst = os.path.join(base_dir, fname)
+                    url = f"{GITHUB_BRIDGE_RAW}/{fname}"
+                    content = None
+                    try:
+                        resp = requests.get(url, timeout=15)
+                        if resp.status_code == 200:
+                            content = resp.content
+                    except Exception:
+                        pass
+                    if content is None:
+                        share_src = os.path.join(NET_SHARE_BRIDGE, fname)
+                        if os.path.exists(share_src):
+                            with open(share_src, 'rb') as sf:
+                                content = sf.read()
+                    if content is not None:
+                        with open(dst, 'wb') as df:
+                            df.write(content)
+                        updated.append(fname)
+                if 'teksea_bridge.py' not in updated:
+                    self.send_json({'success': False, 'error': 'Nao foi possivel baixar a atualizacao do GitHub nem da rede local.'}, 502)
+                    return
+
+                self.send_json({'success': True, 'updated_files': updated, 'restarting': True})
+
+                def _restart():
+                    time.sleep(0.8)
+                    py_exe = sys.executable
+                    script = os.path.join(base_dir, 'teksea_bridge.py')
+                    try:
+                        subprocess.Popen([py_exe, script], cwd=base_dir, creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
+                    except Exception as e:
+                        log_debug(f"Erro ao reiniciar apos update: {e}")
+                    os._exit(0)
+
+                threading.Thread(target=_restart, daemon=True).start()
+            except Exception as exc:
+                self.send_json({'success': False, 'error': str(exc)}, 500)
             return
 
         if path in ('/tms/flash', '/tms/cancel'):
@@ -364,10 +521,11 @@ class TekseaHandler(BaseHTTPRequestHandler):
 
         if path == '/cloud/token':
             global _current_device_flow
-            if not _current_device_flow:
+            app = get_msal_app()
+            if not _current_device_flow or not app:
                 self.send_json({"error": "Nenhum fluxo de login iniciado"})
                 return
-            result = _msal_app.acquire_token_by_device_flow(_current_device_flow)
+            result = app.acquire_token_by_device_flow(_current_device_flow)
             if "access_token" in result:
                 _current_device_flow = None
                 save_msal_cache() # Salva no disco imediatamente
@@ -377,9 +535,10 @@ class TekseaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": result.get("error_description", "Falha na autenticacao")})
 
         elif path == '/cloud/logout':
-            accounts = _msal_app.get_accounts()
-            for a in accounts:
-                _msal_app.remove_account(a)
+            app = get_msal_app()
+            if app:
+                for a in get_msal_accounts():
+                    app.remove_account(a)
             save_msal_cache() # Remove do disco imediatamente
             self.send_json({"success": True})
 
