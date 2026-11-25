@@ -67,6 +67,114 @@ function formatReles(reles: any): string {
   return parts.length ? parts.join(', ') : '—';
 }
 
+const ACAO_OPTIONS = ['NENHUM', 'ALM', 'ALM,RT', 'ALM,BLQ', 'ALM,BLQ,RT'];
+const SINOTICO_OPTIONS = ['NENHUM', 'AC,ALM', 'AC,FLT', 'RET,ALM', 'RET,FLT', 'BAT,ALM', 'BAT,FLT', 'CON,ALM', 'CON,FLT'];
+const DIN_TIPO_OPTIONS = ['DESL', 'NA', 'NF'];
+const DIN_COMANDO_OPTIONS = [
+  'NENHUM', 'INIBIR', 'REMOTO', 'DESLIGA', 'RESET', 'CARG.MAN',
+  'EQUAL.', 'EMG.UDQ', 'STD_BY', 'DJ_CA', 'DJB_DES', 'DJC_DES',
+];
+
+function parseRelesText(text: string): { rp1: number; rp2: number; re11: number; re12: number; re21: number; re22: number } {
+  const p: number[] = [];
+  const e1: number[] = [];
+  const e2: number[] = [];
+  const tokens = text.toUpperCase().split(/[,;\s]+/).filter(Boolean);
+  for (const tok of tokens) {
+    if (tok === '-' || tok === '—' || tok === 'NENHUM') continue;
+    let m = tok.match(/^P\.?([1-6])$/);
+    if (m) { p.push(parseInt(m[1], 10)); continue; }
+    m = tok.match(/^E1\.?([1-8])$/);
+    if (m) { e1.push(parseInt(m[1], 10)); continue; }
+    m = tok.match(/^E2\.?([1-8])$/);
+    if (m) { e2.push(parseInt(m[1], 10)); continue; }
+  }
+  return {
+    rp1: p[0] || 0, rp2: p[1] || 0,
+    re11: e1[0] || 0, re12: e1[1] || 0,
+    re21: e2[0] || 0, re22: e2[1] || 0,
+  };
+}
+
+function parseRetardoInput(raw: string, isMinutes = false): { retardo_s: number; retardo_raw: string } {
+  const s = raw.trim().toLowerCase().replace(',', '.');
+  const num = parseFloat(s);
+  if (isNaN(num) || num < 0) {
+    return { retardo_s: 0, retardo_raw: isMinutes ? '0min' : '0,0s' };
+  }
+  if (s.includes('min') || (isMinutes && !s.includes('s'))) {
+    return { retardo_s: Math.round(num * 60), retardo_raw: `${Math.round(num)}min` };
+  }
+  if (s.includes('h')) {
+    return { retardo_s: Math.round(num * 3600), retardo_raw: `${num}h` };
+  }
+  const rounded = Math.round(num * 10) / 10;
+  return { retardo_s: rounded, retardo_raw: `${rounded.toFixed(1).replace('.', ',')}s` };
+}
+
+function snapshotToPitObject(snap: UgeSnapshot) {
+  const parametros: Record<string, any> = {};
+  for (const [code, p] of Object.entries(snap.parametros)) {
+    parametros[code] = {
+      descricao: p.descricao,
+      valor: p.valor,
+      unidade: p.unidade,
+      raw: p.valor !== null ? String(p.valor) : '-',
+    };
+  }
+  const alarmes: Record<string, any> = {};
+  for (const [code, al] of Object.entries(snap.alarmes)) {
+    const parsedRet = parseRetardoInput(al.retardo_raw === '—' ? '0' : al.retardo_raw, code === 'AL27');
+    alarmes[code] = {
+      descricao: al.descricao,
+      valor: al.valor,
+      unidade: al.unidade,
+      raw: al.valor !== null ? String(al.valor) : 'N/A',
+      acao: al.acao === '—' ? 'NENHUM' : al.acao,
+      retardo_s: parsedRet.retardo_s,
+      retardo_raw: al.retardo_raw === '—' ? '0,0s' : al.retardo_raw,
+      reles: { ...al.reles },
+    };
+  }
+  const entradas_digitais: Record<string, any> = {};
+  for (const [code, d] of Object.entries(snap.entradas_digitais)) {
+    const parsedRet = parseRetardoInput(d.retardo_raw === '—' ? '0' : d.retardo_raw, false);
+    entradas_digitais[code] = {
+      descricao: d.descricao,
+      tipo: d.tipo,
+      sinotico: d.sinotico,
+      retardo_s: parsedRet.retardo_s,
+      retardo_raw: parsedRet.retardo_raw,
+      acao: d.acao === '—' ? 'NENHUM' : d.acao,
+      comando: d.comando,
+      reles: { ...d.reles },
+    };
+  }
+  const saidas_rele: Record<string, any> = {};
+  for (const [code, st] of Object.entries(snap.saidas_rele)) {
+    saidas_rele[code] = {
+      descricao: st.descricao,
+      reles: { ...st.reles },
+    };
+  }
+  return {
+    meta: {
+      cliente: 'LEITURA UGE',
+      modelo: 'TPS125',
+      numero_serie: snap.base.sn_equip != null ? String(snap.base.sn_equip) : '—',
+    },
+    base: structuredClone(snap.base),
+    calibracao: {},
+    limites_parametros: {},
+    limites_alarmes: {},
+    mostradores: {},
+    parametros,
+    alarmes,
+    entradas_digitais,
+    saidas_rele,
+  };
+}
+
 export const PitModal: React.FC<PitModalProps> = ({
   onClose,
   bridgeAlive,
@@ -144,7 +252,31 @@ export const PitModal: React.FC<PitModalProps> = ({
         if (okCount === 0) {
           setReadError('Nenhum registrador respondeu. Verifique se o firmware do ESP32 está atualizado com suporte a read_reg.');
         } else {
-          setUgeSnap(decodeUgeRegisters(rawMap, okCount, totalRegs));
+          const snap = decodeUgeRegisters(rawMap, okCount, totalRegs);
+          setUgeSnap(snap);
+          // Se não há arquivo PIT carregado, promove a leitura da UGE para edição imediata via Bridge
+          if (!pitData && bridgeAlive && bridgeHasPit) {
+            try {
+              const resp = await fetch(`${BRIDGE_URL}/api/pit/revalidate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pit: snapshotToPitObject(snap) }),
+              });
+              const json = await resp.json();
+              if (resp.ok && json.success) {
+                setPitData({
+                  source_file: `UGE_NS_${snap.base.sn_equip ?? 'LIVE'}`,
+                  source_format: 'uge',
+                  pit: json.pit,
+                  warnings: json.warnings,
+                  can_plan: json.can_plan,
+                  summary: json.summary,
+                });
+              }
+            } catch {
+              // Mantém apenas modo leitura se o Bridge não responder
+            }
+          }
           if (failCount > 0) {
             setReadError(`Leitura parcial: ${okCount}/${totalRegs} registradores lidos (${failCount} sem resposta).`);
           }
@@ -260,10 +392,51 @@ export const PitModal: React.FC<PitModalProps> = ({
     if (!pitData) return;
     const next = structuredClone(pitData.pit);
     const trimmed = rawVal.trim();
-    const num = trimmed === '' || trimmed.toUpperCase() === 'N/A' ? null : parseFloat(trimmed.replace(',', '.'));
+    const num = trimmed === '' || trimmed.toUpperCase() === 'N/A' || trimmed === '-' ? null : parseFloat(trimmed.replace(',', '.'));
     next.alarmes[code].valor = num !== null && !isNaN(num) ? num : null;
     next.alarmes[code].raw = trimmed || 'N/A';
     revalidatePit(next, `${code} = ${trimmed || 'N/A'}`);
+  };
+
+  const updateAlarmField = (code: string, field: 'acao' | 'retardo' | 'reles', rawVal: string) => {
+    if (!pitData) return;
+    const next = structuredClone(pitData.pit);
+    if (field === 'acao') {
+      next.alarmes[code].acao = rawVal.trim().toUpperCase() || 'NENHUM';
+    } else if (field === 'retardo') {
+      const parsed = parseRetardoInput(rawVal, code === 'AL27');
+      next.alarmes[code].retardo_s = parsed.retardo_s;
+      next.alarmes[code].retardo_raw = parsed.retardo_raw;
+    } else if (field === 'reles') {
+      next.alarmes[code].reles = parseRelesText(rawVal);
+    }
+    revalidatePit(next, `${code}.${field} = ${rawVal}`);
+  };
+
+  const updateDinField = (
+    code: string,
+    field: 'sinotico' | 'tipo' | 'retardo' | 'acao' | 'comando' | 'reles',
+    rawVal: string
+  ) => {
+    if (!pitData) return;
+    const next = structuredClone(pitData.pit);
+    if (field === 'retardo') {
+      const parsed = parseRetardoInput(rawVal, false);
+      next.entradas_digitais[code].retardo_s = parsed.retardo_s;
+      next.entradas_digitais[code].retardo_raw = parsed.retardo_raw;
+    } else if (field === 'reles') {
+      next.entradas_digitais[code].reles = parseRelesText(rawVal);
+    } else {
+      next.entradas_digitais[code][field] = rawVal.trim().toUpperCase();
+    }
+    revalidatePit(next, `${code}.${field} = ${rawVal}`);
+  };
+
+  const updateStatusRelay = (code: string, rawVal: string) => {
+    if (!pitData) return;
+    const next = structuredClone(pitData.pit);
+    next.saidas_rele[code].reles = parseRelesText(rawVal);
+    revalidatePit(next, `Status ${code} Relés = ${rawVal}`);
   };
 
   const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -801,9 +974,12 @@ export const PitModal: React.FC<PitModalProps> = ({
                                 <input
                                   type="text"
                                   defaultValue={al.valor !== null ? String(al.valor) : 'N/A'}
-                                  key={`${code}-${al.valor}`}
-                                  disabled={writing || al.valor === null}
-                                  onBlur={e => updateAlarmValue(code, e.target.value)}
+                                  key={`${code}-val-${al.valor}`}
+                                  disabled={writing}
+                                  onBlur={e => {
+                                    const cur = al.valor !== null ? String(al.valor) : 'N/A';
+                                    if (cur !== e.target.value.trim()) updateAlarmValue(code, e.target.value);
+                                  }}
                                   className={`w-20 px-2 py-0.5 rounded font-mono text-xs bg-slate-900 border outline-none disabled:opacity-50 ${outOfRange ? 'border-red-500 text-red-300 font-bold' : 'border-slate-700 text-slate-100'
                                     }`}
                                 />{' '}
@@ -821,7 +997,20 @@ export const PitModal: React.FC<PitModalProps> = ({
                               </td>
                             )}
                             <td className="py-1.5 px-2 font-mono text-[11px] text-slate-300">
-                              {pitData ? al.acao : ugeAl?.acao}
+                              {pitData ? (
+                                <select
+                                  value={ACAO_OPTIONS.includes(al.acao) ? al.acao : 'NENHUM'}
+                                  disabled={writing}
+                                  onChange={e => updateAlarmField(code, 'acao', e.target.value)}
+                                  className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-100 font-mono text-[11px] outline-none"
+                                >
+                                  {ACAO_OPTIONS.map(opt => (
+                                    <option key={opt} value={opt}>{opt}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                ugeAl?.acao
+                              )}
                               {pitData && ugeAl && ugeAl.acao !== '—' && (
                                 <span className={`ml-1 ${ugeAl.acao === al.acao ? 'text-emerald-400' : 'text-amber-400'}`}>
                                   ({ugeAl.acao})
@@ -829,13 +1018,43 @@ export const PitModal: React.FC<PitModalProps> = ({
                               )}
                             </td>
                             <td className="py-1.5 px-2 font-mono text-[11px] text-slate-400">
-                              {pitData ? (al.retardo_raw || '—') : ugeAl?.retardo_raw}
+                              {pitData ? (
+                                <input
+                                  type="text"
+                                  defaultValue={al.retardo_raw || '0,0s'}
+                                  key={`${code}-ret-${al.retardo_raw}`}
+                                  disabled={writing}
+                                  onBlur={e => {
+                                    if ((al.retardo_raw || '0,0s') !== e.target.value.trim()) {
+                                      updateAlarmField(code, 'retardo', e.target.value);
+                                    }
+                                  }}
+                                  className="w-16 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-100 font-mono text-[11px] outline-none"
+                                />
+                              ) : (
+                                ugeAl?.retardo_raw
+                              )}
                               {pitData && ugeAl && ugeAl.retardo_raw !== '—' && (
                                 <span className="ml-1 text-cyan-400">({ugeAl.retardo_raw})</span>
                               )}
                             </td>
                             <td className="py-1.5 px-2 font-mono text-[11px]">
-                              <span className="text-emerald-400">{pitData ? pitRel : ugeRel}</span>
+                              {pitData ? (
+                                <input
+                                  type="text"
+                                  defaultValue={pitRel === '—' ? '' : pitRel}
+                                  placeholder="P.1, E1.2"
+                                  key={`${code}-rel-${pitRel}`}
+                                  disabled={writing}
+                                  onBlur={e => {
+                                    const cur = pitRel === '—' ? '' : pitRel;
+                                    if (cur !== e.target.value.trim()) updateAlarmField(code, 'reles', e.target.value);
+                                  }}
+                                  className="w-24 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-emerald-300 font-mono text-[11px] outline-none"
+                                />
+                              ) : (
+                                <span className="text-emerald-400">{ugeRel}</span>
+                              )}
                               {pitData && ugeAl && (
                                 <span className={`ml-1 ${relDiff ? 'text-red-400 font-bold' : 'text-cyan-400'}`}>
                                   ({ugeRel})
@@ -852,7 +1071,7 @@ export const PitModal: React.FC<PitModalProps> = ({
                 {activeTab === 'din' && (
                   <div className="space-y-2">
                     <div className="text-[11px] text-slate-400 bg-slate-900/70 border border-slate-800 rounded-lg px-2.5 py-1.5">
-                      Nota: a descrição textual das entradas digitais (ex.: <em>FUGA NEGATIVA</em>) é armazenada apenas na IHM; a UGE armazena Tipo, Sinótico, Retardo, Ação, Comando e Relés.
+                      Nota: a descrição textual das entradas digitais (ex.: <em>FUGA NEGATIVA</em>) é armazenada apenas na IHM; a UGE armazena Sinótico, Tipo, Retardo, Ação, Comando e Relés (todos editáveis abaixo; relés no formato <code className="text-emerald-300">P.1, E1.2, E2.1</code>).
                     </div>
                     <table className="w-full text-xs text-left border-collapse">
                       <thead className="text-[10px] uppercase text-slate-400 border-b border-slate-800">
@@ -877,16 +1096,89 @@ export const PitModal: React.FC<PitModalProps> = ({
                             pitData && ugeD &&
                             (ugeD.tipo !== d.tipo || ugeD.sinotico !== d.sinotico || ugeD.acao !== d.acao || ugeD.comando !== d.comando || ugeRel !== pitRel)
                           );
+                          const retStr = d.retardo_raw || `${d.retardo_s ?? 0}s`;
                           return (
-                            <tr key={code} className={`${d.tipo === 'DESL' && !dinDiff ? 'opacity-60' : ''} ${dinDiff ? 'bg-red-500/10' : ''}`}>
+                            <tr key={code} className={`${d.tipo === 'DESL' && !dinDiff ? 'opacity-75' : ''} ${dinDiff ? 'bg-red-500/10' : ''}`}>
                               <td className="py-1.5 px-2 font-mono font-bold text-cyan-300">{code}</td>
                               <td className="py-1.5 px-2 text-slate-200">{d.descricao}</td>
-                              <td className="py-1.5 px-2 font-mono text-slate-100">{d.sinotico}</td>
-                              <td className="py-1.5 px-2 font-mono font-bold text-amber-300">{d.tipo}</td>
-                              <td className="py-1.5 px-2 font-mono text-slate-200">{pitData ? `${d.retardo_s ?? 0}s` : d.retardo_raw}</td>
-                              <td className="py-1.5 px-2 font-mono text-slate-100">{d.acao}</td>
-                              <td className="py-1.5 px-2 font-mono text-slate-200">{d.comando}</td>
-                              <td className="py-1.5 px-2 font-mono text-emerald-400">{pitRel}</td>
+                              <td className="py-1.5 px-2 font-mono text-slate-100">
+                                {pitData ? (
+                                  <select
+                                    value={SINOTICO_OPTIONS.includes(d.sinotico) ? d.sinotico : 'NENHUM'}
+                                    disabled={writing}
+                                    onChange={e => updateDinField(code, 'sinotico', e.target.value)}
+                                    className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-100 font-mono text-[11px] outline-none"
+                                  >
+                                    {SINOTICO_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                  </select>
+                                ) : d.sinotico}
+                              </td>
+                              <td className="py-1.5 px-2 font-mono font-bold text-amber-300">
+                                {pitData ? (
+                                  <select
+                                    value={DIN_TIPO_OPTIONS.includes(d.tipo) ? d.tipo : 'DESL'}
+                                    disabled={writing}
+                                    onChange={e => updateDinField(code, 'tipo', e.target.value)}
+                                    className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-amber-300 font-mono text-[11px] font-bold outline-none"
+                                  >
+                                    {DIN_TIPO_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                  </select>
+                                ) : d.tipo}
+                              </td>
+                              <td className="py-1.5 px-2 font-mono text-slate-200">
+                                {pitData ? (
+                                  <input
+                                    type="text"
+                                    defaultValue={retStr}
+                                    key={`${code}-ret-${retStr}`}
+                                    disabled={writing}
+                                    onBlur={e => {
+                                      if (retStr !== e.target.value.trim()) updateDinField(code, 'retardo', e.target.value);
+                                    }}
+                                    className="w-16 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-100 font-mono text-[11px] outline-none"
+                                  />
+                                ) : d.retardo_raw}
+                              </td>
+                              <td className="py-1.5 px-2 font-mono text-slate-100">
+                                {pitData ? (
+                                  <select
+                                    value={ACAO_OPTIONS.includes(d.acao) ? d.acao : 'NENHUM'}
+                                    disabled={writing}
+                                    onChange={e => updateDinField(code, 'acao', e.target.value)}
+                                    className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-100 font-mono text-[11px] outline-none"
+                                  >
+                                    {ACAO_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                  </select>
+                                ) : d.acao}
+                              </td>
+                              <td className="py-1.5 px-2 font-mono text-slate-200">
+                                {pitData ? (
+                                  <select
+                                    value={DIN_COMANDO_OPTIONS.includes(d.comando) ? d.comando : 'NENHUM'}
+                                    disabled={writing}
+                                    onChange={e => updateDinField(code, 'comando', e.target.value)}
+                                    className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-100 font-mono text-[11px] outline-none"
+                                  >
+                                    {DIN_COMANDO_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                  </select>
+                                ) : d.comando}
+                              </td>
+                              <td className="py-1.5 px-2 font-mono text-emerald-400">
+                                {pitData ? (
+                                  <input
+                                    type="text"
+                                    defaultValue={pitRel === '—' ? '' : pitRel}
+                                    placeholder="P.1, E1.1"
+                                    key={`${code}-rel-${pitRel}`}
+                                    disabled={writing}
+                                    onBlur={e => {
+                                      const cur = pitRel === '—' ? '' : pitRel;
+                                      if (cur !== e.target.value.trim()) updateDinField(code, 'reles', e.target.value);
+                                    }}
+                                    className="w-24 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-emerald-300 font-mono text-[11px] outline-none"
+                                  />
+                                ) : pitRel}
+                              </td>
                               {pitData && ugeD && (
                                 <td className={`py-1.5 px-2 font-mono text-[11px] ${dinDiff ? 'text-red-400 font-bold' : 'text-emerald-400'}`}>
                                   {ugeD.sinotico} · {ugeD.tipo} · {ugeD.retardo_raw} · {ugeD.acao} · {ugeD.comando} · {ugeRel}
@@ -906,7 +1198,7 @@ export const PitModal: React.FC<PitModalProps> = ({
                       <tr>
                         <th className="py-1.5 px-2">Status</th>
                         <th className="py-1.5 px-2">Descrição</th>
-                        <th className="py-1.5 px-2">{pitData ? 'Relés PIT' : 'Relés UGE'}</th>
+                        <th className="py-1.5 px-2">{pitData ? 'Relés (editável: P.1, E1.2, E2.1)' : 'Relés UGE'}</th>
                         {pitData && ugeSnap && <th className="py-1.5 px-2 text-cyan-400">Lido da UGE</th>}
                       </tr>
                     </thead>
@@ -917,10 +1209,25 @@ export const PitModal: React.FC<PitModalProps> = ({
                         const ugeRel = ugeSt ? formatReles(ugeSt.reles) : '—';
                         const diff = Boolean(pitData && ugeSt && rel !== ugeRel);
                         return (
-                          <tr key={code} className={`${rel === '—' && ugeRel === '—' ? 'opacity-45' : ''} ${diff ? 'bg-red-500/10' : ''}`}>
+                          <tr key={code} className={`${rel === '—' && ugeRel === '—' ? 'opacity-65' : ''} ${diff ? 'bg-red-500/10' : ''}`}>
                             <td className="py-1.5 px-2 font-mono font-bold text-slate-300">{code}</td>
                             <td className="py-1.5 px-2 text-slate-200">{st.descricao}</td>
-                            <td className="py-1.5 px-2 font-mono text-emerald-400">{rel}</td>
+                            <td className="py-1.5 px-2 font-mono text-emerald-400">
+                              {pitData ? (
+                                <input
+                                  type="text"
+                                  defaultValue={rel === '—' ? '' : rel}
+                                  placeholder="P.1, E1.2"
+                                  key={`${code}-strel-${rel}`}
+                                  disabled={writing}
+                                  onBlur={e => {
+                                    const cur = rel === '—' ? '' : rel;
+                                    if (cur !== e.target.value.trim()) updateStatusRelay(code, e.target.value);
+                                  }}
+                                  className="w-32 px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-emerald-300 font-mono text-xs outline-none"
+                                />
+                              ) : rel}
+                            </td>
                             {pitData && ugeSnap && (
                               <td className={`py-1.5 px-2 font-mono ${diff ? 'text-red-400 font-bold' : 'text-cyan-300'}`}>
                                 {ugeRel}
