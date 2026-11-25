@@ -4,30 +4,70 @@ title Instalador Automatico - TEKSEA Bridge (TPS / SCR)
 
 :: ============================================================
 ::   instalar_bridge.bat
-::   Servido pelo ESP32 - Baixa e instala o TEKSEA Bridge
+::   Servido pelo ESP32 - Baixa e instala o TEKSEA Bridge v2.1.0
 ::   Repositorio: https://github.com/bacgraf/CALIBRADOR_TPS_SCR
 :: ============================================================
 
-:: --- PASSO 0: Auto-elevacao para Administrador --------------
+set "INSTALL_DIR=C:\TEKSEA_BRIDGE"
+set "GH_RAW=https://raw.githubusercontent.com/bacgraf/CALIBRADOR_TPS_SCR/main/TEKSEA_BRIDGE"
+set "GH_CCS_ZIP=https://github.com/bacgraf/CALIBRADOR_TPS_SCR/releases/latest/download/ccs_base.zip"
+set "NET_SHARE=\\srv01\01 TEKSEA\111 PUB\01 INTRANET\Marcel Hilleshein\DEV\CALIBRADOR_TPS_SCR\TEKSEA_BRIDGE"
+set "STAGE_DIR=%~1"
+
+:: --- PASSO 0: Staging na sessao do usuario + Auto-elevacao ---
 net session >nul 2>&1
 if %errorLevel% neq 0 (
+    echo Preparando arquivos do TEKSEA Bridge v2.1.0...
+    set "STAGE_DIR=%TEMP%\teksea_bridge_stage"
+    if not exist "!STAGE_DIR!\user_files\configs" mkdir "!STAGE_DIR!\user_files\configs"
+    if not exist "!STAGE_DIR!\user_files\settings" mkdir "!STAGE_DIR!\user_files\settings"
+    if not exist "!STAGE_DIR!\user_files\images" mkdir "!STAGE_DIR!\user_files\images"
+
+    for %%F in (
+        "teksea_bridge.py"
+        "pit_parser.py"
+        "flash_controller.py"
+        "version.json"
+        "install_TPS_SCR_calibrador.bat"
+        "uninstall_TPS_SCR_calibrador.bat"
+        "one_time_setup.bat"
+        "kill_bridge.bat"
+        "stop_bridge.py"
+        "dpinst_64_eng.exe"
+        "LEIAME.txt"
+        "user_files/configs/tms320f28375s.ccxml"
+        "user_files/settings/generated.ufsettings"
+    ) do (
+        set "REL=%%~F"
+        set "WIN_REL=!REL:/=\!"
+        curl.exe -fksSL "%GH_RAW%/!REL!" -o "!STAGE_DIR!\!WIN_REL!" >nul 2>&1
+        if !errorLevel! neq 0 (
+            if exist "%NET_SHARE%\!WIN_REL!" (
+                copy /y "%NET_SHARE%\!WIN_REL!" "!STAGE_DIR!\!WIN_REL!" >nul 2>&1
+            )
+        )
+    )
+
+    :: Preserva config.json e ms_cache.bin da instalacao antiga em Documents (se existir)
+    if exist "%USERPROFILE%\Documents\TEKSEA_BRIDGE\config.json" (
+        copy /y "%USERPROFILE%\Documents\TEKSEA_BRIDGE\config.json" "!STAGE_DIR!\config.json" >nul 2>&1
+    )
+    if exist "%USERPROFILE%\Documents\TEKSEA_BRIDGE\ms_cache.bin" (
+        copy /y "%USERPROFILE%\Documents\TEKSEA_BRIDGE\ms_cache.bin" "!STAGE_DIR!\ms_cache.bin" >nul 2>&1
+    )
+
     echo Solicitando permissao de Administrador...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '\"!STAGE_DIR!\"' -Verb RunAs"
     exit /b
 )
 
 cls
 echo.
 echo  ================================================
-echo    TEKSEA BRIDGE - INSTALADOR AUTOMATICO
+echo    TEKSEA BRIDGE - INSTALADOR AUTOMATICO v2.1.0
 echo    TPS125 / SCR Calibrador
 echo  ================================================
 echo.
-
-set "INSTALL_DIR=C:\TEKSEA_BRIDGE"
-set "GH_RAW=https://raw.githubusercontent.com/bacgraf/CALIBRADOR_TPS_SCR/main/TEKSEA_BRIDGE"
-set "GH_CCS_ZIP=https://github.com/bacgraf/CALIBRADOR_TPS_SCR/releases/latest/download/ccs_base.zip"
-set "NET_SHARE=\\srv01\01 TEKSEA\111 PUB\01 INTRANET\Marcel Hilleshein\DEV\CALIBRADOR_TPS_SCR\TEKSEA_BRIDGE"
 
 :: --- PASSO 1: Verificar Python ------------------------------
 echo [1/6] Verificando instalacao do Python...
@@ -50,21 +90,15 @@ timeout /t 1 /nobreak >nul
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object { $_.CommandLine -match 'teksea_bridge\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-:: Preserva config.json e ms_cache.bin caso exista instalacao anterior em Documents\TEKSEA_BRIDGE
-if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
-if not exist "%INSTALL_DIR%\config.json" if exist "%USERPROFILE%\Documents\TEKSEA_BRIDGE\config.json" (
-    copy /y "%USERPROFILE%\Documents\TEKSEA_BRIDGE\config.json" "%INSTALL_DIR%\config.json" >nul 2>&1
-)
-if not exist "%INSTALL_DIR%\ms_cache.bin" if exist "%USERPROFILE%\Documents\TEKSEA_BRIDGE\ms_cache.bin" (
-    copy /y "%USERPROFILE%\Documents\TEKSEA_BRIDGE\ms_cache.bin" "%INSTALL_DIR%\ms_cache.bin" >nul 2>&1
-)
-
-:: --- PASSO 2: Criar estrutura de pastas e baixar do GitHub --
-echo [2/6] Baixando arquivos do TEKSEA Bridge v2.1.0 do GitHub...
+:: --- PASSO 2: Instalar arquivos em C:\TEKSEA_BRIDGE ---------
+echo [2/6] Instalando arquivos do TEKSEA Bridge v2.1.0...
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 if not exist "%INSTALL_DIR%\user_files\configs" mkdir "%INSTALL_DIR%\user_files\configs"
 if not exist "%INSTALL_DIR%\user_files\settings" mkdir "%INSTALL_DIR%\user_files\settings"
 if not exist "%INSTALL_DIR%\user_files\images" mkdir "%INSTALL_DIR%\user_files\images"
+
+:: Garante permissao de modificacao para usuarios autenticados (necessario para auto-update)
+icacls "%INSTALL_DIR%" /grant *S-1-5-11:(OI)(CI)M /T /Q >nul 2>&1
 
 for %%F in (
     "teksea_bridge.py"
@@ -83,19 +117,35 @@ for %%F in (
 ) do (
     set "REL=%%~F"
     set "WIN_REL=!REL:/=\!"
-    echo  -> Baixando !REL!...
-    curl.exe -fksSL "%GH_RAW%/!REL!" -o "%INSTALL_DIR%\!WIN_REL!" >nul 2>&1
-    if !errorLevel! neq 0 (
-        if exist "%NET_SHARE%\!WIN_REL!" (
-            copy /y "%NET_SHARE%\!WIN_REL!" "%INSTALL_DIR%\!WIN_REL!" >nul
-        ) else (
-            echo  AVISO: Nao foi possivel obter !REL! do GitHub.
+    if not "%STAGE_DIR%"=="" if exist "%STAGE_DIR%\!WIN_REL!" (
+        copy /y "%STAGE_DIR%\!WIN_REL!" "%INSTALL_DIR%\!WIN_REL!" >nul 2>&1
+    ) else (
+        echo  -> Baixando !REL!...
+        curl.exe -fksSL "%GH_RAW%/!REL!" -o "%INSTALL_DIR%\!WIN_REL!" >nul 2>&1
+        if !errorLevel! neq 0 (
+            if exist "%NET_SHARE%\!WIN_REL!" (
+                copy /y "%NET_SHARE%\!WIN_REL!" "%INSTALL_DIR%\!WIN_REL!" >nul 2>&1
+            ) else (
+                echo  AVISO: Nao foi possivel obter !REL!.
+            )
         )
     )
 )
 
+:: Restaura config.json e ms_cache.bin se capturados no staging e nao existentes no destino
+if not "%STAGE_DIR%"=="" (
+    if not exist "%INSTALL_DIR%\config.json" if exist "%STAGE_DIR%\config.json" (
+        copy /y "%STAGE_DIR%\config.json" "%INSTALL_DIR%\config.json" >nul 2>&1
+    )
+    if not exist "%INSTALL_DIR%\ms_cache.bin" if exist "%STAGE_DIR%\ms_cache.bin" (
+        copy /y "%STAGE_DIR%\ms_cache.bin" "%INSTALL_DIR%\ms_cache.bin" >nul 2>&1
+    )
+    rd /s /q "%STAGE_DIR%" >nul 2>&1
+)
+
 if not exist "%INSTALL_DIR%\teksea_bridge.py" (
-    echo  ERRO: Falha ao baixar teksea_bridge.py. Verifique sua conexao com a internet.
+    echo  ERRO: Falha ao obter teksea_bridge.py.
+    echo  Verifique o acesso a rede local ^(srv01^) ou a permissao do repositorio GitHub.
     goto :falha
 )
 
@@ -113,7 +163,7 @@ if not exist "%INSTALL_DIR%\ccs_base\DebugServer\bin\DSLite.exe" (
         robocopy "%NET_SHARE%\ccs_base" "%INSTALL_DIR%\ccs_base" /E /NFL /NDL /NJH /NJS /NC /NS /NP >nul
     ) else (
         echo  AVISO: ccs_base nao encontrado em Releases ou na rede.
-        echo         O Bridge funcionara para Nuvem/Lote, mas a gravacao JTAG requer a pasta ccs_base.
+        echo         O Bridge funcionara para PIT/Nuvem/Lote, mas a gravacao JTAG requer a pasta ccs_base.
     )
 )
 echo  OK - Arquivos prontos em %INSTALL_DIR%.
@@ -166,14 +216,14 @@ echo  OK - Protocolo teksea:// registrado.
 echo.
 
 :: --- PASSO 6: Iniciar TEKSEA Bridge agora -------------------
-echo [6/6] Iniciando TEKSEA Bridge em segundo plano...
+echo [6/6] Iniciando TEKSEA Bridge v2.1.0 em segundo plano...
 start "" "%PYTHONW%" "%SCRIPT_PATH%" "teksea://start"
 
 echo.
 echo  ================================================
 echo   INSTALACAO CONCLUIDA COM SUCESSO!
-echo   O TEKSEA Bridge ja foi iniciado em segundo plano.
-echo   Retorne ao navegador ^(o status mudara para BRIDGE: OK^).
+echo   O TEKSEA Bridge v2.1.0 ja foi iniciado.
+echo   Retorne ao navegador ^(BRIDGE: OK v2.1.0^).
 echo  ================================================
 echo.
 pause
@@ -183,4 +233,3 @@ exit /b 0
 echo.
 pause
 exit /b 1
-
