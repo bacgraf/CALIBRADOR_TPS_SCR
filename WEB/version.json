@@ -1,0 +1,6 @@
+{
+  "version": "2.1.0",
+  "release_date": "2026-11-25",
+  "bridge_min_version": "2.1.0",
+  "changelog": "Adiciona importacao, conferencia e gravacao de PIT TPS125 via CAN, deteccao de atualizacao do TEKSEA Bridge e versionamento do frontend."
+}

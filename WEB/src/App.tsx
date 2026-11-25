@@ -7,7 +7,9 @@ import { GraphAuth } from './services/microsoftGraph/auth';
 import { GraphExcel } from './services/microsoftGraph/excel';
 import { BkiView } from './BkiView';
 import { PitModal } from './PitModal';
+import pkg from '../package.json';
 
+const FRONTEND_VERSION = pkg.version;
 const EXPECTED_BRIDGE_VERSION = '2.1.0';
 const GITHUB_BRIDGE_VERSION_URL = 'https://raw.githubusercontent.com/bacgraf/CALIBRADOR_TPS_SCR/main/TEKSEA_BRIDGE/version.json';
 
@@ -226,7 +228,7 @@ const SelectionScreen = ({ onSelect, onOpenWifi, systemTime }: { onSelect: (mode
           </div>
         </div>
         <h1 className="text-4xl font-black tracking-tighter text-white mb-2">CALIBRADOR <span className="text-blue-500">TEKSEA</span></h1>
-        <p className="text-slate-400 font-medium">Selecione o produto para calibrar</p>
+        <p className="text-slate-400 font-medium">Selecione o produto para calibrar <span className="ml-2 px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-slate-800 text-slate-300 border border-slate-700">v{FRONTEND_VERSION}</span></p>
       </div>
 
       <div className="z-10 grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-6xl px-4">
@@ -1095,7 +1097,12 @@ export default function App() {
                 ) : (
                   <CircuitBoard className="text-emerald-500 w-5 h-5" />
                 )}
-                <h1 className="text-base font-bold tracking-wider text-slate-100">CALIBRADOR {appMode.toUpperCase()}</h1>
+                <h1 className="text-base font-bold tracking-wider text-slate-100">
+                  CALIBRADOR {appMode.toUpperCase()}
+                  <span className="ml-2 text-[10px] font-mono font-semibold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700 align-middle">
+                    v{FRONTEND_VERSION}
+                  </span>
+                </h1>
                 <button
                   onClick={() => setShowLoteModal(true)}
                   className="ml-4 px-3 py-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1.5 shadow-sm"
